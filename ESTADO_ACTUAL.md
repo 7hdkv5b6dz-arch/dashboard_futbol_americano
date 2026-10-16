@@ -4,7 +4,7 @@ Bitácora de la etapa de mejora estadística (encargo de 7 fases, 16/10/2026).
 Se actualiza al cerrar cada fase. Las decisiones fijadas aquí solo cambian
 con evidencia nueva y quedando documentado el cambio.
 
-Última actualización: 16/10/2026 (F4 completada).
+Última actualización: 16/10/2026 (F4 completada e integrada).
 
 ## Reglas de trabajo vigentes
 
@@ -28,6 +28,7 @@ con evidencia nueva y quedando documentado el cambio.
 | F2 | Guardarraíles de código (tests de `evaluar_spread`/`evaluar_totales`, conversión de cuota única, escritura atómica del registro) | Pendiente | — |
 | F3 | Protocolo pre-registrado + walk-forward anidado (formalización por escrito de cada experimento) | Completada (16/10/2026); se repetirá un pre-registro por experimento en las fases siguientes | Pre-registro de F4: `lab/pre_registro_calibracion.md` (sha 61617cbbc815); convenios y protocolo abajo |
 | F4 | Calibración: A modelo / B mercado / C recalibrado / D mezcla, walk-forward puro | Completada (16/10/2026) | `lab/calibracion.py` + `lab/salida_calibracion.txt` — 20/20 comprobaciones OK, determinista; verificación de apoyo `lab/verificacion_calibracion.py` |
+| F4b | Integración de la calibración en la app (adoptada: spread C1 · total C1 · moneyline D; versión `cal-f4-1`) | Completada (16/10/2026) | `calibracion.py` (raíz) + `tests/test_calibracion.py` + `lab/verificacion_integracion.py` + `lab/salida_integracion_f4.txt` — 14/14 OK |
 | F5 | Motor de EV push-aware + probabilidad de equilibrio + estado de validación | Pendiente | — |
 | F6 | UI de decisión (probabilidad, equilibrio, EV, incertidumbre, muestra, motivos, versión, estado) | Pendiente | — |
 | F7 | Variables nuevas (descanso, viaje, clima, QB), una a una contra la línea base | Pendiente | — |
@@ -156,8 +157,8 @@ documentado**: la regla literal elige C2, pero comparaba ventanas distintas
 mayor). En la **ventana común (2019–2025)**: C1 y D = 0.2501 (Δ −0.0133)
 frente a C2 = 0.2515 (Δ −0.0119); contra el mercado: C1 empata (+0.0005
 [−0.0005, +0.0016]), D empata (−0.0001 [−0.0009, +0.0007]), C2 queda detrás
-(+0.0020 [+0.0001, +0.0039]). → Recomendación: **C1 (Platt) para spread**;
-decisión final del usuario al aprobar la integración.
+(+0.0020 [+0.0001, +0.0039]). → **Adoptado el 16/10/2026: C1 (Platt) para
+spread** (ver F4b).
 
 **Verificación de apoyo** (rejilla de verosimilitud, ajuste 2006–2025): el
 óptimo de Platt es b≈0.066 en spread y b≈0.059 en total — la variación de
@@ -189,6 +190,56 @@ inmunidad; valen para descartar; la confirmación limpia es prospectiva.
 `lab/verificacion_calibracion.py`, `lab/salida_verificacion_f4.txt`. Ningún
 archivo de la app fue modificado; el registro de picks sigue intacto; las
 62/62 pruebas del proyecto siguen verdes.
+
+## F4b — Integración de la calibración en la app (16/10/2026)
+
+**Adoptado** (tras aprobar la recomendación de F4): spread → **C1 (Platt)** ·
+total → **C1 (Platt)** · moneyline → **D (mezcla)**. Versión de probabilidad
+**`cal-f4-1`**; el registro fiel sella los picks nuevos como
+**`srs-v2+cal-f4-1`**. Coeficientes congelados (ajuste 2006–2025, universo
+estricto) en `calibracion.py` (sha aee60d2b5fc7), con el procedimiento de
+refit documentado en su cabecera: no se editan "a ojo".
+
+**Qué cambia en la app** (mínimo, reversible, sin tocar el historial):
+
+- La probabilidad que se **congela** en el registro fiel (jornada pendiente)
+  pasa a ser la calibrada: `evaluar_spread`/`evaluar_totales` (app.py) y
+  `evaluar_picks_ml` (datos.py) ganan un modo `calibrado=True` que solo usa la
+  ruta de la jornada pendiente; las vistas históricas conservan sus
+  probabilidades brutas (nada se reescribe).
+- La selección de spread/totales (edge en **puntos**) no cambia. La de
+  moneyline usa la probabilidad, así que con la mezcla (peso del modelo
+  ≈ 0.006, sigue al mercado) los edges calibrados ≈ 0 y **moneyline queda sin
+  picks**: es el resultado medido en F4, no un fallo.
+- El EV del registro se calcula con la probabilidad calibrada (deja de estar
+  inflado por la falsa confianza).
+
+**Evidencia** (`lab/verificacion_integracion.py` →
+`lab/salida_integracion_f4.txt`; **14/14 OK**, determinista, sin red; ejecuta
+las funciones REALES de `app.py` extraídas por AST, sin Streamlit):
+
+- Muestra determinista de 300 partidos: spread 190 picks con selección
+  idéntica bruto vs calibrado; |p−0.5| medio 0.1385 → 0.0109. Total: 170
+  picks; 0.1290 → 0.0080.
+- Moneyline en la misma muestra: 217 picks brutos → **0 calibrados**.
+- Jornada pendiente real (n=26 partidos con líneas): spread 14 y total 13
+  picks congelables; moneyline 14 brutos → 0. Ejemplo de EV congelado:
+  MIN @ CLE (−110): p bruta 0.6265 (EV +0.196) → p calibrada 0.5193
+  (EV −0.009 $ por $1).
+- Registro de picks intacto (sha 79f7250d…).
+
+**Pruebas**: `tests/test_calibracion.py` — 16 pruebas nuevas (fórmula
+independiente, anclajes congelados, monotonía, vacíos, contrato de moneyline,
+versión del registro y **re-ajuste real** del universo 2006–2025 del CSV que
+reproduce los coeficientes congelados al 1e-9). Total del proyecto: **78/78**
+verdes; `py_compile` OK; ninguna prueba usa red.
+
+**Limitaciones de este bloque**: la confirmación de la calibración es
+prospectiva (los picks nuevos son los primeros sellados con `cal-f4-1`); lo
+retrospectivo sigue contaminado. La selección de spread/totales sigue siendo
+por puntos hasta que F5 la sustituya por EV push-aware; hasta entonces el
+registro mostrará EV ≈ negativo en esos picks (honesto: es la realidad
+medida hoy). Refit solo con el procedimiento de `calibracion.py`.
 
 ## Protocolo anti-contaminación (fijado el 16/10/2026)
 
@@ -225,15 +276,12 @@ Reglas para las fases siguientes:
 
 ## Próximo paso
 
-**Decisión de integración de la calibración** (bloque aparte, pendiente de
-OK): candidatos por mercado — Spread: C1 (Platt) recomendado (la elección
-literal a favor de C2 dependía de comparar ventanas distintas; en la ventana
-común C1 gana y C2 queda detrás del mercado) · Total: C1 (Platt) · Moneyline:
-D (mezcla), el único que pasa; nota: D ≈ mercado y con peso del modelo ≈ 0
-(alternativa de producto: usar directamente la probabilidad sin vig del
-mercado en moneyline). Requisitos de la integración: probabilidad calibrada
-versionada en el registro (p. ej. «srs-v2+cal»), sin reescribir historial y
-con pruebas propias. Después: **F5** (EV push-aware + probabilidad de
-equilibrio) y **F6** (UI de decisión) sobre esas probabilidades.
-**F2 (guardarraíles)** sigue disponible; no cambia resultados, solo reduce
-riesgo técnico.
+La calibración está **integrada** (F4b): probabilidad versionada `cal-f4-1`,
+registro sellado como `srs-v2+cal-f4-1`, moneyline sin picks (resultado
+medido). Siguiente: **F5** (motor de EV push-aware + probabilidad de
+equilibrio + estado de validación), con su propio pre-registro antes de
+medir, y después **F6** (UI de decisión: probabilidad, equilibrio, EV,
+incertidumbre, muestra, motivos, versión, estado). **F2 (guardarraíles)**
+sigue disponible; no cambia resultados, solo reduce riesgo técnico. Nota de
+producto: el eje de búsqueda de EV+ pasa a ser el precio/CLV (H6), no la
+«información propia».

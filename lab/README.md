@@ -18,6 +18,16 @@ fuera, en una carpeta temporal).
 - `verificacion_calibracion.py` — Verificación de apoyo de F4 (ventana común
   entre candidatos, Δ vs mercado, rejilla de verosimilitud del óptimo Platt).
 - `salida_verificacion_f4.txt` — Salida congelada de la verificación de apoyo.
+- `verificacion_integracion.py` — Verificación de la **integración** de la
+  calibración (F4b): ejecuta las funciones reales de `app.py` extraídas por
+  AST (sin Streamlit) y comprueba selección, probabilidad congelada, EV,
+  moneyline y versión del registro.
+- `salida_integracion_f4.txt` — Salida congelada de la integración (14/14).
+
+La calibración **adoptada** (producción) vive fuera del laboratorio, en
+`calibracion.py` (raíz del proyecto), con coeficientes congelados y pruebas
+propias (`tests/test_calibracion.py`); el laboratorio es lo que produjo la
+evidencia.
 
 ## Cómo se ejecuta
 
@@ -26,6 +36,7 @@ cd dashboard_futbol_americano
 .venv/bin/python -B lab/evaluacion.py
 .venv/bin/python -B lab/calibracion.py            # F4
 .venv/bin/python -B lab/verificacion_calibracion.py  # apoyo de F4
+.venv/bin/python -B lab/verificacion_integracion.py  # integración (F4b)
 ```
 
 No escribe ningún archivo del proyecto, no usa red (bloquea sockets durante el

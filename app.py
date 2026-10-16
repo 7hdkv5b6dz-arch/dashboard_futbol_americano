@@ -31,6 +31,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+import calibracion
 import datos
 
 # ---------------------------------------------------------------------------
@@ -149,13 +150,17 @@ def ganancia_apuesta(cuotas, gano):
     return cuota_a_pago(cuotas).where(gano_f.astype(bool), -1.0)
 
 
-def evaluar_spread(df, umbral):
+def evaluar_spread(df, umbral, calibrado=False):
     """Picks del modelo contra el spread, ya calificados.
 
     Elige el lado (local con `edge > 0`, visitante con `edge < 0`) cuando la
     ventaja estimada llega al `umbral`. Los push quedan como apuesta nula
     (ganancia $0, no cuentan como acierto). Añade `prob_modelo` y
     `prob_mercado` DEL LADO DEL PICK (el mercado sin vig, como referencia).
+
+    Con `calibrado=True` (jornada pendiente) `prob_modelo` es la probabilidad
+    CALIBRADA (F4, `calibracion.py`); con el valor por defecto (histórico) se
+    conserva la probabilidad bruta con la que se emitió aquel pick.
     """
     d = df[df["margen_modelo"].notna() & df["spread_line"].notna()].copy()
     d["edge"] = d["margen_modelo"] - d["spread_line"]
@@ -170,17 +175,23 @@ def evaluar_spread(df, umbral):
     if "sigma_modelo" in d.columns:
         p_cubre_local = datos.probabilidad_supera(
             d["margen_modelo"], d["spread_line"], d["sigma_modelo"])
+        if calibrado:
+            p_cubre_local = calibracion.calibrar("spread", p_cubre_local)
         d["prob_modelo"] = p_cubre_local.where(d["al_local"], 1.0 - p_cubre_local)
         p_merc = d["prob_local_spread_sin_vig"]
         d["prob_mercado"] = p_merc.where(d["al_local"], 1.0 - p_merc)
     return d
 
 
-def evaluar_totales(df, umbral):
+def evaluar_totales(df, umbral, calibrado=False):
     """Picks del modelo en el total (más/menos), ya calificados.
 
     Añade `prob_modelo` (probabilidad normal del lado elegido) y
     `prob_mercado` (el sin vig del mercado), ambas del lado del pick.
+
+    Con `calibrado=True` (jornada pendiente) `prob_modelo` es la probabilidad
+    CALIBRADA (F4, `calibracion.py`); por defecto se conserva la bruta del
+    histórico.
     """
     d = df[df["total_modelo"].notna() & df["total_line"].notna()].copy()
     d["edge"] = d["total_modelo"] - d["total_line"]
@@ -194,6 +205,8 @@ def evaluar_totales(df, umbral):
     if "sigma_total_modelo" in d.columns:
         p_over = datos.probabilidad_supera(
             d["total_modelo"], d["total_line"], d["sigma_total_modelo"])
+        if calibrado:
+            p_over = calibracion.calibrar("total", p_over)
         d["prob_modelo"] = p_over.where(d["al_over"], 1.0 - p_over)
         po = datos._prob_implicita(d["over_odds"])
         pu = datos._prob_implicita(d["under_odds"])
@@ -896,8 +909,8 @@ with tab_registro:
     umbral_ml_reg = c2.select_slider(
         "Umbral de edge: moneyline (puntos de probabilidad)",
         options=[2, 3, 4, 5, 6, 7, 8], value=4, key="umbral_ml_reg",
-        help="Ventaja mínima del modelo sobre el mercado (sin vig), en puntos "
-             "porcentuales de probabilidad.",
+        help="Ventaja mínima de la probabilidad calibrada sobre el mercado "
+             "(sin vig), en puntos porcentuales.",
     )
 
     EMOJI_ESTADO = {
@@ -953,9 +966,10 @@ with tab_registro:
     hs = evaluar_spread(era_reg, umbral_reg)
     ht = evaluar_totales(era_reg, umbral_reg)
     hm = datos.evaluar_picks_ml(era_reg, umbral=umbral_ml_reg / 100.0)
-    fs = evaluar_spread(futuros_reg, umbral_reg)
-    ft = evaluar_totales(futuros_reg, umbral_reg)
-    fm = datos.evaluar_picks_ml(futuros_reg, umbral=umbral_ml_reg / 100.0)
+    fs = evaluar_spread(futuros_reg, umbral_reg, calibrado=True)
+    ft = evaluar_totales(futuros_reg, umbral_reg, calibrado=True)
+    fm = datos.evaluar_picks_ml(futuros_reg, umbral=umbral_ml_reg / 100.0,
+                                calibrado=True)
 
     def _texto_spread(picks):
         return pd.Series(
@@ -1106,12 +1120,16 @@ with tab_registro:
         "probabilidad exactas del momento en que se emitió**: si después el "
         "mercado mueve las líneas, aquí no se reescribe nada (y el resultado "
         "se decide con la línea congelada, no con la de hoy). Congelar es un "
-        "acto explícito: así queda claro qué se emitió, cuándo y a qué precio."
+        "acto explícito: así queda claro qué se emitió, cuándo y a qué precio. "
+        "Desde el 16/10/2026 lo que se congela es la **probabilidad calibrada** "
+        "(`srs-v2+cal-f4-1`), la corrección medida en la auditoría F4; los "
+        "picks anteriores conservan la probabilidad con la que se emitieron."
     )
 
     existente_fiel = datos.cargar_registro_picks()
     nuevas_fiel = datos.registro_desde_picks(
-        registro[~registro["jugado"]].rename(columns={"pick": "seleccion"}))
+        registro[~registro["jugado"]].rename(columns={"pick": "seleccion"}),
+        version=f"{datos.VERSION_MODELO}+{calibracion.VERSION_CALIBRACION}")
     ids_ya = set(existente_fiel["id"]) if len(existente_fiel) else set()
     n_nuevos_fiel = int((~nuevas_fiel["id"].isin(ids_ya)).sum()) if len(nuevas_fiel) else 0
 

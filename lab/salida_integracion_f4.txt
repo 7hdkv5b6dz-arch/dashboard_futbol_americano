@@ -1,0 +1,45 @@
+====================================================================================
+Verificación de la integración de la calibración (F4) — funciones reales de app.py
+====================================================================================
+  app.py           sha1 aa17d74b1c3c
+  datos.py         sha1 946d72f27aa9
+  calibracion.py   sha1 aee60d2b5fc7
+
+Jornada pendiente con líneas: n=26 (sigma margen 13.28 · sigma total 13.77)
+Muestra de comportamiento: últimos 300 partidos de la era (temporadas 2025-2026)
+
+-- Spread y totales (selección por edge en puntos, umbral 2.0)
+
+-- Moneyline (selección por edge de probabilidad, umbral 4 pp)
+
+-- Jornada pendiente (lo que la app congelaría hoy)
+   Spread: 14 picks pendientes
+      TEN @ IND · edge +3.7 pts · p_cal 0.4961
+      NYJ @ NE · edge +6.4 pts · p_cal 0.5014
+      NO @ NYG · edge +4.8 pts · p_cal 0.4983
+   Total: 13 picks pendientes
+      CHI @ ATL · edge -4.3 pts · p_cal 0.5102
+      TEN @ IND · edge +4.2 pts · p_cal 0.5050
+      NO @ NYG · edge -2.4 pts · p_cal 0.5069
+   Moneyline: bruto 14 → calibrado 0 picks
+
+-- Ejemplo de EV ($ por $1) que quedaría en el registro fiel
+   MIN @ CLE · cuota -110 · p bruta 0.6265 → p calibrada 0.5193
+   EV bruto +0.1961 → EV calibrado -0.0085 $ por $1
+
+  [OK   ] Spread: selección idéntica (puntos) bruto vs calibrado n bruto=190 · n calibrado=190
+  [OK   ] Spread: la probabilidad congelada cambia (calibrada) |Δp| máx=0.3473
+  [OK   ] Spread: la calibrada aplana la falsa confianza       |p−0.5| medio 0.1385 → 0.0109
+  [OK   ] Spread: prob del lado = calibrar(bruta)              máx |Δ|=0.00e+00
+  [OK   ] Total: selección idéntica (puntos) bruto vs calibrado n bruto=170 · n calibrado=170
+  [OK   ] Total: la probabilidad congelada cambia (calibrada)  |Δp| máx=0.2727
+  [OK   ] Total: la calibrada aplana la falsa confianza        |p−0.5| medio 0.1290 → 0.0080
+  [OK   ] Total: prob del lado = calibrar(bruta)               máx |Δ|=0.00e+00
+  [OK   ] Moneyline bruto: emite picks en la muestra           n=217
+  [OK   ] Moneyline calibrado: 0 picks (la mezcla sigue al mercado) n=0
+  [OK   ] El EV congelado ya no está inflado por la falsa confianza -0.0085 < +0.1961
+  [OK   ] Versión compuesta del registro fiel                  srs-v2+cal-f4-1
+  [OK   ] sin intentos de red                                  0 intentos
+  [OK   ] tiempo de ejecución < 10 s                           0.41 s
+
+VEREDICTO: 14/14 comprobaciones OK — la integración hace lo que F4 midió: selección intacta, probabilidad congelada calibrada, moneyline sin picks.

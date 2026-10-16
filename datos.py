@@ -39,6 +39,8 @@ import numpy as np
 import pandas as pd
 import requests
 
+import calibracion
+
 BASE = Path(__file__).parent / "data"
 
 URL_JUEGOS = "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv"
@@ -894,7 +896,8 @@ def tabla_calibracion(probabilidad, resultado,
     return res[columnas]
 
 
-def evaluar_picks_ml(df: pd.DataFrame, umbral: float = 0.04) -> pd.DataFrame:
+def evaluar_picks_ml(df: pd.DataFrame, umbral: float = 0.04,
+                     calibrado: bool = False) -> pd.DataFrame:
     """Picks del modelo al ganador (moneyline), con su resultado.
 
     El edge se mide en PROBABILIDAD: probabilidad del modelo − probabilidad
@@ -903,6 +906,11 @@ def evaluar_picks_ml(df: pd.DataFrame, umbral: float = 0.04) -> pd.DataFrame:
     `sigma_modelo` y las cuotas `home_moneyline`/`away_moneyline` (de
     `_preparar`). En empate: push (apuesta nula, no cuenta como acierto).
     La salida ya trae `prob_modelo` y `prob_mercado` DEL LADO DEL PICK.
+
+    Con `calibrado=True` se usa la probabilidad CALIBRADA (F4, `calibracion.py`)
+    tanto para el edge como para `prob_modelo`. La mezcla de moneyline sigue al
+    mercado (peso del modelo ≈ 0), así que los edges calibrados son ≈0 y esta
+    vía queda en la práctica sin picks: es el resultado medido, no un fallo.
     """
     d = df[
         df["margen_modelo"].notna() & df["sigma_modelo"].notna()
@@ -912,10 +920,22 @@ def evaluar_picks_ml(df: pd.DataFrame, umbral: float = 0.04) -> pd.DataFrame:
     p_local, p_visitante = probabilidades_ml(d["margen_modelo"], d["sigma_modelo"])
     d["prob_local_modelo"] = p_local
     d["prob_visitante_modelo"] = p_visitante
-    d["edge"] = d["prob_local_modelo"] - d["prob_local_sin_vig"]
+    if calibrado:
+        p_local_cal = calibracion.calibrar(
+            "moneyline", p_local, d["prob_local_sin_vig"])
+        d["prob_local_calibrada"] = p_local_cal
+        d["prob_visitante_calibrada"] = 1.0 - p_local_cal
+        d["edge"] = p_local_cal - d["prob_local_sin_vig"]
+    else:
+        d["edge"] = d["prob_local_modelo"] - d["prob_local_sin_vig"]
     d = d[d["edge"].abs() >= umbral].copy()
     d["al_local"] = d["edge"] > 0
-    d["prob_modelo"] = d["prob_local_modelo"].where(d["al_local"], d["prob_visitante_modelo"])
+    if calibrado:
+        d["prob_modelo"] = d["prob_local_calibrada"].where(
+            d["al_local"], d["prob_visitante_calibrada"])
+    else:
+        d["prob_modelo"] = d["prob_local_modelo"].where(
+            d["al_local"], d["prob_visitante_modelo"])
     d["prob_mercado"] = d["prob_local_sin_vig"].where(d["al_local"], 1.0 - d["prob_local_sin_vig"])
     d["pick"] = d["home_team"].where(d["al_local"], d["away_team"])
     d["cuota"] = d["home_moneyline"].where(d["al_local"], d["away_moneyline"])
