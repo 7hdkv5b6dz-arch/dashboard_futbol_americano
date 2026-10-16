@@ -4,7 +4,8 @@ Bitácora de la etapa de mejora estadística (encargo de 7 fases, 16/10/2026).
 Se actualiza al cerrar cada fase. Las decisiones fijadas aquí solo cambian
 con evidencia nueva y quedando documentado el cambio.
 
-Última actualización: 16/10/2026 (F4 completada e integrada).
+Última actualización: 16/10/2026 (F5 completada: motor de EV con push
+explícito, probabilidad de equilibrio y estados).
 
 ## Reglas de trabajo vigentes
 
@@ -29,7 +30,7 @@ con evidencia nueva y quedando documentado el cambio.
 | F3 | Protocolo pre-registrado + walk-forward anidado (formalización por escrito de cada experimento) | Completada (16/10/2026); se repetirá un pre-registro por experimento en las fases siguientes | Pre-registro de F4: `lab/pre_registro_calibracion.md` (sha 61617cbbc815); convenios y protocolo abajo |
 | F4 | Calibración: A modelo / B mercado / C recalibrado / D mezcla, walk-forward puro | Completada (16/10/2026) | `lab/calibracion.py` + `lab/salida_calibracion.txt` — 20/20 comprobaciones OK, determinista; verificación de apoyo `lab/verificacion_calibracion.py` |
 | F4b | Integración de la calibración en la app (adoptada: spread C1 · total C1 · moneyline D; versión `cal-f4-1`) | Completada (16/10/2026) | `calibracion.py` (raíz) + `tests/test_calibracion.py` + `lab/verificacion_integracion.py` + `lab/salida_integracion_f4.txt` — 14/14 OK |
-| F5 | Motor de EV push-aware + probabilidad de equilibrio + estado de validación | Pendiente | — |
+| F5 | Motor de EV push-aware + probabilidad de equilibrio + estado de validación | Completada (16/10/2026) | `motor_ev.py` + `tests/test_motor_ev.py` + `lab/verificacion_motor_ev.py` + `lab/salida_motor_ev.txt` — 37/37 OK; sesgo del push medido y documentado en pantalla |
 | F6 | UI de decisión (probabilidad, equilibrio, EV, incertidumbre, muestra, motivos, versión, estado) | Pendiente | — |
 | F7 | Variables nuevas (descanso, viaje, clima, QB), una a una contra la línea base | Pendiente | — |
 | F8 | Escalabilidad multi-deporte | Pendiente | — |
@@ -44,7 +45,7 @@ con evidencia nueva y quedando documentado el cambio.
 | H4 | Comparaciones modelo vs mercado con n distintos (5511 vs 5375; tabla Brier de la app igual) | Media | Corregido en el instrumento (conjunto estricto) |
 | H5 | Postemporada mezclada con temporada regular (232 partidos, 4,2%) | Media | Separada en el instrumento (muestra pequeña aparte) |
 | H6 | Línea del backtest = línea de cierre de nflverse, no la del momento de emisión; sin CLV | Media | Pendiente (fase CLV / F5) |
-| H7 | EV push-blind y sin probabilidad de equilibrio | Media | Pendiente (F5) |
+| H7 | EV push-blind y sin probabilidad de equilibrio | Media | Resuelto en F5: `motor_ev.py` (push explícito, equilibrio, estados, banda del calibrado); sesgo del push medido 2006–2025 |
 | H8 | 2026 (temporada en curso) entraba sin etiqueta en los agregados | Media-baja | Etiquetada como informativa en el instrumento |
 | H9 | Empates ML con doble criterio; etiquetas "push fuera"/"empates fuera" del reporte inexactas a nivel de todos los partidos (push/empate contados como 0 en spread/ML; el total sí los excluía) | Baja | Cuantificado con sensibilidad en el instrumento (Δ apenas cambia) |
 | H10 | Cobertura de cuotas irregular 2006–2009; −110 por defecto cuando falta cuota (~2,5% de picks) | Baja | Documentado; % de cuota real impreso junto al ROI |
@@ -241,6 +242,84 @@ por puntos hasta que F5 la sustituya por EV push-aware; hasta entonces el
 registro mostrará EV ≈ negativo en esos picks (honesto: es la realidad
 medida hoy). Refit solo con el procedimiento de `calibracion.py`.
 
+## F5 — Motor de EV con push explícito (16/10/2026)
+
+**Pre-registro**: `lab/pre_registro_motor_ev.md` (sha 0731404155e6), fijado
+antes de medir. Regla clave que se aplicó al pie de la letra: si la
+verificación empírica del push falla la tolerancia (0.015), el estimador «no
+se adopta sin documentar la limitación en pantalla».
+
+**Qué se adoptó**:
+
+- `motor_ev.py` (nuevo, autónomo: numpy/pandas + `calibracion`): momio
+  americano → pago neto y probabilidad implícita; **probabilidad de
+  equilibrio** = 1/(1+pago neto) (el valor de p_condicional que hace EV = 0;
+  el push no mueve el umbral: devuelve el importe); **push explícito** (0
+  exacto en líneas x.5 — aritmético, no supuesto; normal discretizada en
+  líneas enteras; empate = línea 0 en moneyline); **EV por $1** =
+  (1−p_push)·(p_cond·pago − (1−p_cond)); descomposición coherente
+  p_ganar+p_perder+p_push = 1; **banda del calibrado** (delta method con la
+  covarianza H⁻¹ congelada del ajuste 2006–2025 — solo error de estimación).
+- Estados en la interfaz (ninguno dice «validada»): «Sin EV» (EV ≤ 0),
+  «EV+ en el ruido» (EV > 0 con el IC95% tocando 0), «EV+ sin validar»
+  (IC95% entero > 0). Validación de estrategia = prospectiva, hoy inexistente.
+- La app (🎯 y 📋) muestra por pick: momio, **P. eq.**, **P. est.**,
+  **P. push**, **EV $1** y **Estado**, con las notas de alcance (la
+  incertidumbre no cubre cambio de régimen ni error de modelo; el sesgo del
+  push está medido; nada se «valida»). **La selección no cambia** (F5 no toca
+  umbrales). Los picks nuevos congelan el EV del motor (columna `ev_num` en
+  `registro_desde_picks`); los históricos **no se recalculan** (fallback
+  exacto a la fórmula anterior, con prueba).
+- Versión del motor: `ev-f5-1` (el registro sigue sellando `srs-v2+cal-f4-1`:
+  aún no se ha capturado ninguna fila nueva).
+
+**Evidencia** (`lab/verificacion_motor_ev.py` → `lab/salida_motor_ev.txt`;
+**37/37 OK**, determinista salvo la línea de reloj, sin red, 0,4 s):
+
+- Matemáticas con casos a mano: −110 → pago 10/11 y equilibrio 110/210;
+  EV(p=0.5) → −1/22; EV = 0 exacto en el equilibrio con cualquier push
+  (5e-17); coherencia ±0; push = 0 exacto en x.5.
+- Jornada pendiente real (funciones de `app.py` extraídas por AST, n=26
+  partidos): spread 14 picks · total 13 · moneyline 0 (heredado de F4b); EV
+  recalculado de forma independiente (±0); ev_lo ≤ EV ≤ ev_hi; estados
+  válidos. Hoy: 25 «Sin EV» y 2 «EV+ en el ruido» (LAC @ KC −105 y LA @ LV
+  −105, ambos con el IC tocando 0) — **ninguna apuesta recomendable** y
+  ninguna marcada como validada.
+- Push empírico 2006–2025 (5.511 partidos jugados): spread Δ −1.06 pp
+  (dentro de tolerancia; detalle: −1.96 pp en líneas enteras), total
+  Δ −0.09 pp, **moneyline Δ +2.38 pp → FUERA de tolerancia** (el empate real
+  es más raro que la normal: 0.27% observado vs 2.65% estimado). Ruta
+  pre-registrada aplicada: sesgo medido y **documentado en pantalla**
+  (`NOTA_PUSH` en el caption del 🎯); el único mercado afectado (moneyline)
+  hoy emite 0 picks.
+- Regresión contra lo existente (pago neto, implícita, probabilidad bruta) a
+  1e-12; el registro guarda `ev_num` tal cual y conserva la fórmula aproximada
+  cuando no viene.
+- Verificación visual de la interfaz: cazó un bug de la integración F5 (no
+  del motor) — la tabla de totales del 🎯 construía `Cuota` (mayúscula) y sin
+  `al_over`, columnas que `decorar` exige; la verificación por AST no lo veía
+  porque ejecuta `evaluar_totales` (que sí las produce). Corregido y
+  re-verificado: 🎯 y 📋 renderizan completas y sus números coinciden con esta
+  salida congelada.
+
+**Pruebas**: 42 pruebas nuevas (`tests/test_motor_ev.py` 33 + ampliación de
+`test_calibracion.py` 6 — covarianzas reproducidas por re-ajuste y banda — +
+3 de `ev_num` en `test_datos.py`). Total del proyecto: **120/120** verdes;
+`py_compile` OK; sin red; registro intacto (sha 79f7250d…).
+
+**Limitaciones de este bloque**:
+
+- La banda del EV cubre SOLO el error de estimación de los coeficientes de
+  calibración; no cubre cambio de régimen, error de modelo ni la
+  incertidumbre del push (estimado con el modelo, con el sesgo medido).
+- Un EV+ no es validación: los 2 EV+ de hoy están «en el ruido»; la
+  confirmación limpia es prospectiva (registro fiel).
+- El sesgo del push sesga el EV mostrado: en líneas enteras de spread
+  subestima ~2 pp el push ⇒ infla ~2% el |EV| de esas líneas; en moneyline
+  sobreestima +2.4 pp el empate ⇒ desinfla el EV de picks ML (hoy 0).
+- `datos._pago_por_dolar` sigue asumiendo −110 en el ROI histórico; el motor
+  **no rellena nada** (diferencia deliberada, con prueba de regresión).
+
 ## Protocolo anti-contaminación (fijado el 16/10/2026)
 
 Historial de uso de los datos:
@@ -276,12 +355,13 @@ Reglas para las fases siguientes:
 
 ## Próximo paso
 
-La calibración está **integrada** (F4b): probabilidad versionada `cal-f4-1`,
-registro sellado como `srs-v2+cal-f4-1`, moneyline sin picks (resultado
-medido). Siguiente: **F5** (motor de EV push-aware + probabilidad de
-equilibrio + estado de validación), con su propio pre-registro antes de
-medir, y después **F6** (UI de decisión: probabilidad, equilibrio, EV,
-incertidumbre, muestra, motivos, versión, estado). **F2 (guardarraíles)**
-sigue disponible; no cambia resultados, solo reduce riesgo técnico. Nota de
-producto: el eje de búsqueda de EV+ pasa a ser el precio/CLV (H6), no la
-«información propia».
+F5 está **cerrada**: el EV se calcula con push explícito, probabilidad de
+equilibrio, banda del calibrado y estado; el sesgo del push está medido y
+documentado en pantalla, y ningún estado «valida» nada. Siguiente: **F6**
+(UI de decisión: muestra, motivos, incertidumbre visible, revisión de las
+etiquetas «Nivel» — H12 — y de la presentación de los estados). Después,
+**F7** (variables nuevas, una a una contra la línea base). **F2
+(guardarraíles)** sigue disponible (deuda técnica; no cambia resultados). El
+eje de búsqueda de EV+ sigue siendo el precio/CLV (H6), no la «información
+propia»; la confirmación de cualquier estrategia es prospectiva (registro
+fiel).

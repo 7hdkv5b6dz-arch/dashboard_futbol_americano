@@ -33,6 +33,7 @@ import streamlit as st
 
 import calibracion
 import datos
+import motor_ev
 
 # ---------------------------------------------------------------------------
 st.set_page_config(
@@ -346,6 +347,14 @@ proximos = calendario[~calendario["jugado"] & calendario["spread_line"].notna()]
 hist_picks = traer_pronosticos_historicos()
 picks_futuros = traer_pronosticos_futuros()
 
+# Los sigmas de la jornada pendiente (misma aritmética que el 📋) los usan la
+# calibración y el motor de EV (push + banda) en toda la app, no solo en el
+# registro: se dejan puestos aquí una sola vez.
+_sigma_fut, _sigma_total_fut = datos.sigma_actual(
+    hist_picks[hist_picks["season"] >= 2006])
+picks_futuros = picks_futuros.assign(
+    sigma_modelo=_sigma_fut, sigma_total_modelo=_sigma_total_fut)
+
 
 def color_equipos(valores):
     """Lista de colores reales para una lista de abreviaturas."""
@@ -638,14 +647,26 @@ Las cuotas son las reales de nflverse (desde 2006); antes se asume −110.
                 for loc, lin in zip(ts["home_team"], ts["spread_line"])
             ]
             ts["Nivel"] = ts["edge"].abs().map(nivel_confianza)
+            p_cubre = calibracion.calibrar("spread", datos.probabilidad_supera(
+                ts["margen_modelo"], ts["spread_line"], ts["sigma_modelo"]))
+            ts["prob_modelo"] = p_cubre.where(ts["al_local"], 1.0 - p_cubre)
+            ts = motor_ev.decorar(ts, "spread")
             tabla_s = ts[["week", "gameday", "Partido", "Línea", "Pick",
-                          "margen_modelo", "edge", "cuota", "Nivel"]].rename(
+                          "margen_modelo", "edge", "cuota", "Nivel",
+                          "p_equilibrio", "p_estimada", "p_push", "ev_estimado",
+                          "estado_ev"]].rename(
                 columns={
                     "week": "Semana", "gameday": "Fecha",
                     "margen_modelo": "Margen modelo", "edge": "Edge",
                     "cuota": "Cuota", "Partido": "Partido",
+                    "p_equilibrio": "P. eq.", "p_estimada": "P. est.",
+                    "p_push": "P. push", "ev_estimado": "EV $1",
+                    "estado_ev": "Estado",
                 }
             )
+            tabla_s["P. eq."] = tabla_s["P. eq."] * 100.0
+            tabla_s["P. est."] = tabla_s["P. est."] * 100.0
+            tabla_s["P. push"] = tabla_s["P. push"] * 100.0
             st.dataframe(
                 tabla_s, width="stretch", hide_index=True, height=min(430, 40 + 36 * len(tabla_s)),
                 column_config={
@@ -657,6 +678,27 @@ Las cuotas son las reales de nflverse (desde 2006); antes se asume −110.
                     "Cuota": st.column_config.NumberColumn(format="%d"),
                     "Línea": st.column_config.TextColumn(
                         help="La línea desde el equipo local (+ = local favorito)."),
+                    "P. eq.": st.column_config.NumberColumn(
+                        format="%.1f%%",
+                        help="Probabilidad de equilibrio del momio (1/(1+pago "
+                             "neto)): por debajo de ella el EV es negativo."),
+                    "P. est.": st.column_config.NumberColumn(
+                        format="%.1f%%",
+                        help="Probabilidad calibrada del pick (F4)."),
+                    "P. push": st.column_config.NumberColumn(
+                        format="%.2f%%",
+                        help="Probabilidad de push estimada por el modelo: 0 "
+                             "exacto en líneas x.5; en líneas enteras y "
+                             "empates se estima (con sesgo medido: ver nota "
+                             "de abajo)."),
+                    "EV $1": st.column_config.NumberColumn(
+                        format="%+.3f",
+                        help="Valor esperado por $1 con push explícito: si el "
+                             "resultado cae justo en la línea, la apuesta se "
+                             "devuelve y no suma ni resta."),
+                    "Estado": st.column_config.TextColumn(
+                        help="Sin EV · EV+ en el ruido · EV+ sin validar. "
+                             "Ningún estado «valida» la apuesta."),
                 },
             )
             st.caption(
@@ -680,18 +722,32 @@ Las cuotas son las reales de nflverse (desde 2006); antes se asume −110.
                 tt["away_team"].map(APODOS).fillna(tt["away_team"]) + " @ "
                 + tt["home_team"].map(APODOS).fillna(tt["home_team"])
             )
-            tt["Cuota"] = tt["over_odds"].where(tt["edge_total"] > 0, tt["under_odds"])
+            tt["cuota"] = tt["over_odds"].where(tt["edge_total"] > 0, tt["under_odds"])
+            tt["al_over"] = tt["edge_total"] > 0
             tt["Nivel"] = tt["edge_total"].abs().map(nivel_confianza)
+            p_over = calibracion.calibrar("total", datos.probabilidad_supera(
+                tt["total_modelo"], tt["total_line"], tt["sigma_total_modelo"]))
+            tt["prob_modelo"] = p_over.where(tt["edge_total"] > 0, 1.0 - p_over)
+            tt = motor_ev.decorar(tt, "total")
+            tabla_t = tt[["week", "gameday", "Partido", "total_line",
+                          "total_modelo", "edge_total", "Pick", "cuota",
+                          "Nivel", "p_equilibrio", "p_estimada", "p_push",
+                          "ev_estimado", "estado_ev"]].rename(
+                columns={
+                    "week": "Semana", "gameday": "Fecha",
+                    "total_line": "Total (línea)", "total_modelo": "Total modelo",
+                    "edge_total": "Edge", "cuota": "Cuota",
+                    "p_equilibrio": "P. eq.", "p_estimada": "P. est.",
+                    "p_push": "P. push", "ev_estimado": "EV $1",
+                    "estado_ev": "Estado",
+                }
+            )
+            tabla_t["P. eq."] = tabla_t["P. eq."] * 100.0
+            tabla_t["P. est."] = tabla_t["P. est."] * 100.0
+            tabla_t["P. push"] = tabla_t["P. push"] * 100.0
             st.dataframe(
-                tt[["week", "gameday", "Partido", "total_line", "total_modelo",
-                    "edge_total", "Pick", "Cuota", "Nivel"]].rename(
-                    columns={
-                        "week": "Semana", "gameday": "Fecha",
-                        "total_line": "Total (línea)", "total_modelo": "Total modelo",
-                        "edge_total": "Edge",
-                    }
-                ),
-                width="stretch", hide_index=True, height=min(430, 40 + 36 * len(tt)),
+                tabla_t, width="stretch", hide_index=True,
+                height=min(430, 40 + 36 * len(tabla_t)),
                 column_config={
                     "Semana": st.column_config.NumberColumn(format="%d"),
                     "Total (línea)": st.column_config.NumberColumn(format="%.1f"),
@@ -699,10 +755,43 @@ Las cuotas son las reales de nflverse (desde 2006); antes se asume −110.
                         format="%.1f", help="Puntos totales esperados."),
                     "Edge": st.column_config.NumberColumn(format="%+.1f"),
                     "Cuota": st.column_config.NumberColumn(format="%d"),
+                    "P. eq.": st.column_config.NumberColumn(
+                        format="%.1f%%",
+                        help="Probabilidad de equilibrio del momio (1/(1+pago "
+                             "neto)): por debajo de ella el EV es negativo."),
+                    "P. est.": st.column_config.NumberColumn(
+                        format="%.1f%%",
+                        help="Probabilidad calibrada del pick (F4)."),
+                    "P. push": st.column_config.NumberColumn(
+                        format="%.2f%%",
+                        help="Probabilidad de push estimada por el modelo: 0 "
+                             "exacto en líneas x.5; en líneas enteras y "
+                             "empates se estima (con sesgo medido: ver nota "
+                             "de abajo)."),
+                    "EV $1": st.column_config.NumberColumn(
+                        format="%+.3f",
+                        help="Valor esperado por $1 con push explícito: si el "
+                             "resultado cae justo en la línea, la apuesta se "
+                             "devuelve y no suma ni resta."),
+                    "Estado": st.column_config.TextColumn(
+                        help="Sin EV · EV+ en el ruido · EV+ sin validar. "
+                             "Ningún estado «valida» la apuesta."),
                 },
             )
         else:
             st.info("Ningún total supera el umbral esta jornada.")
+
+        st.caption(
+            "**EV $1** = valor esperado por dólar con **push explícito**: si "
+            "el resultado cae justo en la línea, la apuesta se devuelve y no "
+            "suma ni resta. **P. eq.** = probabilidad de equilibrio del momio: "
+            "por debajo de ella el EV es negativo. **P. est.** = probabilidad "
+            "calibrada del pick. **Estado** no «valida» nada: un EV+ puede ser "
+            "ruido o error de calibración. Puede no haber ninguna apuesta con "
+            "EV+."
+        )
+        st.caption(f"**Sesgo del push (medido):** {motor_ev.NOTA_PUSH}")
+        st.caption(f"**Estado de la estrategia:** {motor_ev.ESTADO_ESTRATEGIA}")
     else:
         st.info(
             "Ahora mismo no hay partidos pendientes con línea publicada "
@@ -938,6 +1027,9 @@ with tab_registro:
         prob_mercado = (pd.to_numeric(picks["prob_mercado"], errors="coerce")
                         if "prob_mercado" in picks.columns
                         else pd.Series(float("nan"), index=picks.index))
+        ev_num = (pd.to_numeric(picks["ev_estimado"], errors="coerce")
+                  if "ev_estimado" in picks.columns
+                  else pd.Series(float("nan"), index=picks.index))
         return pd.DataFrame({
             "temporada": picks["season"].astype(int),
             "semana": picks["week"].astype(int),
@@ -955,6 +1047,7 @@ with tab_registro:
             "prob_modelo": prob_modelo,
             "prob_mercado": prob_mercado,
             "cuota": pd.to_numeric(picks["cuota"], errors="coerce"),
+            "ev_num": ev_num,
             "gano": picks["gano"].astype("boolean"),
             "ganancia": pd.to_numeric(picks["ganancia"], errors="coerce"),
             "jugado": jugado,
@@ -970,6 +1063,11 @@ with tab_registro:
     ft = evaluar_totales(futuros_reg, umbral_reg, calibrado=True)
     fm = datos.evaluar_picks_ml(futuros_reg, umbral=umbral_ml_reg / 100.0,
                                 calibrado=True)
+    # Motor F5: EV con push explícito, probabilidad de equilibrio y estado.
+    # No cambia la selección; añade columnas para la interfaz y el registro.
+    fs = motor_ev.decorar(fs, "spread")
+    ft = motor_ev.decorar(ft, "total")
+    fm = motor_ev.decorar(fm, "moneyline")
 
     def _texto_spread(picks):
         return pd.Series(
@@ -1046,21 +1144,30 @@ with tab_registro:
     COLUMNAS_TABLA = {
         "fecha": "Fecha", "partido": "Partido", "mercado": "Mercado",
         "origen": "Origen", "pick": "Pick", "linea": "Línea", "edge": "Edge",
-        "cuota": "Cuota", "Estado": "Estado", "ganancia": "Ganancia $1",
+        "cuota": "Cuota", "ev_num": "EV $1", "Estado": "Estado",
+        "ganancia": "Ganancia $1",
     }
     CONFIG_TABLA = {
         "Cuota": st.column_config.NumberColumn(format="%+.0f"),
     }
 
     def _tabla_picks(datos_vista):
-        """Tabla de picks lista para mostrar (ganancia vacía si pendiente)."""
+        """Tabla de picks lista para mostrar (ganancia vacía si pendiente).
+
+        `EV $1` solo aparece donde el motor F5 dejó su EV (la jornada
+        pendiente); en lo histórico va vacío — no se recalcula nada.
+        """
         v = datos_vista[["fecha", "partido", "mercado", "origen", "pick", "linea",
-                         "edge", "cuota", "Estado", "ganancia"]].rename(columns=COLUMNAS_TABLA)
+                         "edge", "cuota", "ev_num", "Estado", "ganancia"]].rename(columns=COLUMNAS_TABLA)
         v = v.copy()
         pendiente = v["Estado"].str.contains("Pendiente")
         v["Ganancia $1"] = [
             "" if es_pendiente or pd.isna(g) else f"{g:+.2f}"
             for es_pendiente, g in zip(pendiente, v["Ganancia $1"])
+        ]
+        v["EV $1"] = [
+            f"{x:+.3f}" if pd.notna(x) else ""
+            for x in pd.to_numeric(v["EV $1"], errors="coerce")
         ]
         return v
 
@@ -1122,8 +1229,10 @@ with tab_registro:
         "se decide con la línea congelada, no con la de hoy). Congelar es un "
         "acto explícito: así queda claro qué se emitió, cuándo y a qué precio. "
         "Desde el 16/10/2026 lo que se congela es la **probabilidad calibrada** "
-        "(`srs-v2+cal-f4-1`), la corrección medida en la auditoría F4; los "
-        "picks anteriores conservan la probabilidad con la que se emitieron."
+        "(`srs-v2+cal-f4-1`, la corrección medida en la auditoría F4) y el "
+        "**EV con push explícito** (motor F5: si el resultado cae justo en la "
+        "línea, la apuesta se devuelve y no suma ni resta); los picks "
+        "anteriores conservan la probabilidad y el EV con los que se emitieron."
     )
 
     existente_fiel = datos.cargar_registro_picks()
@@ -1216,9 +1325,10 @@ with tab_registro:
         st.caption(
             "**«Sin vig»** = probabilidad implícita del mercado quitándole la "
             "comisión (la referencia justa). **EV $1** = valor esperado por "
-            "dólar según la probabilidad del modelo: si el modelo no estuviera "
-            "calibrado, el EV engañaría — por eso la calibración se audita "
-            "justo aquí abajo."
+            "dólar con **push explícito** (el push devuelve el importe) según "
+            "la probabilidad calibrada congelada; los picks capturados desde "
+            "F5 lo guardan así. Un EV positivo no valida la apuesta: la "
+            "validación de la estrategia es prospectiva."
         )
     else:
         st.caption(

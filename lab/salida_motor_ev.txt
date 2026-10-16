@@ -1,0 +1,111 @@
+====================================================================================
+Verificación del motor de EV con push explícito (F5) — sin Streamlit
+====================================================================================
+  app.py           sha1 6e763aeed8b6
+  datos.py         sha1 3f89f27616e8
+  calibracion.py   sha1 5e72ee304b97
+  motor_ev.py      sha1 06fcc073f504
+  Pre-registro: lab/pre_registro_motor_ev.md (sha1 0731404155e6)
+  Versión del motor: ev-f5-1
+  Solo lectura · sin red · determinista (salvo la línea de tiempo)
+
+==============================================================================
+1. MATEMÁTICAS DEL MOTOR (casos calculados a mano)
+==============================================================================
+
+==============================================================================
+2. JORNADA PENDIENTE (funciones reales de app.py + motor)
+==============================================================================
+  Partidos pendientes con líneas: n=26 (σ margen 13.28 · σ total 13.77)
+  Moneyline: sin picks con el umbral (n=0)
+
+  Lo que la interfaz mostrará en la jornada pendiente
+  (momio · P. eq. · P. est. · P. push · EV $1 · Estado):
+Mercado    Partido  Momio  P. eq.  P. est.  P. push   EV $1           Estado
+-------  ---------  -----  ------  -------  -------  ------  ---------------
+Spread   TEN @ IND   -105   51.2%    49.6%    2.89%  -0.031           Sin EV
+Spread    NYJ @ NE   -105   51.2%    50.1%    0.00%  -0.021           Sin EV
+Spread    NO @ NYG   -122   55.0%    49.8%    0.00%  -0.093           Sin EV
+Spread   CAR @ PHI   -110   52.4%    50.5%    0.00%  -0.036           Sin EV
+Spread    PIT @ TB   -105   51.2%    49.5%    0.00%  -0.034           Sin EV
+Spread    LAC @ KC   -105   51.2%    51.6%    0.00%  +0.008  EV+ en el ruido
+Spread    BUF @ LV   -112   52.8%    52.0%    0.00%  -0.016           Sin EV
+Spread    DAL @ GB   -105   51.2%    49.4%    0.00%  -0.036           Sin EV
+Spread    WAS @ SF   -108   51.9%    49.3%    0.00%  -0.050           Sin EV
+Spread    NE @ CHI   -110   52.4%    51.9%    0.00%  -0.010           Sin EV
+Spread   IND @ MIN   -110   52.4%    51.9%    0.00%  -0.010           Sin EV
+Spread   MIA @ NYJ   -110   52.4%    52.1%    0.00%  -0.006           Sin EV
+Spread     LA @ LV   -105   51.2%    51.9%    2.88%  +0.012  EV+ en el ruido
+Spread    KC @ SEA   -114   53.3%    50.0%    0.00%  -0.062           Sin EV
+Total    CHI @ ATL   -108   51.9%    51.0%    0.00%  -0.017           Sin EV
+Total    TEN @ IND   -112   52.8%    50.5%    0.00%  -0.044           Sin EV
+Total     NO @ NYG   -108   51.9%    50.7%    0.00%  -0.024           Sin EV
+Total     PIT @ TB   -108   51.9%    50.5%    0.00%  -0.027           Sin EV
+Total     LAC @ KC   -115   53.5%    50.9%    0.00%  -0.049           Sin EV
+Total     BUF @ LV   -110   52.4%    50.8%    0.00%  -0.030           Sin EV
+Total     WAS @ SF   -112   52.8%    50.8%    0.00%  -0.039           Sin EV
+Total     NE @ CHI   -115   53.5%    50.7%    0.00%  -0.053           Sin EV
+Total     PIT @ NO   -110   52.4%    50.7%    0.00%  -0.032           Sin EV
+Total     SF @ ATL   -110   52.4%    50.9%    0.00%  -0.029           Sin EV
+Total    CIN @ BAL   -110   52.4%    50.3%    0.00%  -0.041           Sin EV
+Total    MIA @ NYJ   -110   52.4%    50.4%    0.00%  -0.037           Sin EV
+Total     KC @ SEA   -118   54.1%    50.8%    0.00%  -0.062           Sin EV
+  Estados: {'Sin EV': 25, 'EV+ en el ruido': 2} · ninguno dice «validada».
+
+==============================================================================
+3. PUSH EMPÍRICO 2006-2025 (media estimada vs observada)
+==============================================================================
+     solo líneas enteras (n=2995): observado 4.74% · estimado 2.79% · Δ -1.96 pp
+     solo líneas enteras (n=2663): observado 2.97% · estimado 2.78% · Δ -0.19 pp
+     (moneyline: el push es el empate; n=5511)
+  Nota de sesgo mostrada en la interfaz:
+    Push estimado con el modelo (normal discretizada), no observado. Control 2006-2025: total Δ −0.1 pp; spread Δ −1.1 pp agregado, pero subestima ~2 pp en líneas enteras (los números clave concentran más pushes de los que captura la normal); empate de moneyline Δ +2.4 pp (la normal empata más de lo que empata la NFL de verdad; solo afectaría a picks de moneyline, hoy 0).
+
+==============================================================================
+4. REGRESIÓN CONTRA LO EXISTENTE Y CONTRATO DEL REGISTRO
+==============================================================================
+
+  [OK   ] momio -110: pago y equilibrio                              pago 0.9090909091 · equilibrio 0.5238095238
+  [OK   ] momio +130: pago y equilibrio                              pago 1.3000000000 · equilibrio 0.4347826087
+  [OK   ] momio +100: pago y equilibrio                              pago 1.0000000000 · equilibrio 0.5000000000
+  [OK   ] momio -200: pago y equilibrio                              pago 0.5000000000 · equilibrio 0.6666666667
+  [OK   ] EV p=0.5 @ −110 = −1/22                                    -0.0454545455
+  [OK   ] EV p=0.6 @ −110 = +0.145454…                               +0.1454545455
+  [OK   ] el push escala el EV por (1−p_push)                        +0.1410909091
+  [OK   ] EV = 0 exacto en el equilibrio (con push)                  +5.11e-17
+  [OK   ] p_ganar + p_perder + p_push = 1                            ['1.000000000000000', '1.000000000000000']
+  [OK   ] push = 0 EXACTO en líneas x.5                              0.0 (incluso sin σ: es aritmético)
+  [OK   ] push en línea entera = normal discretizada                 0.0298745448
+  [OK   ] Spread: p_ganar+p_perder+p_push=1                          máx |Δ|=0.00e+00
+  [OK   ] Spread: EV recalculado independiente                       máx |Δ|=0.00e+00
+  [OK   ] Spread: P. est. = prob_modelo (calibrada)                  máx |Δ|=0.00e+00
+  [OK   ] Spread: ev_lo ≤ EV ≤ ev_hi                                 n=14
+  [OK   ] Spread: estados válidos y sin «validada»                   EV+ en el ruido · Sin EV
+  [OK   ] Spread: push definido (0 en x.5, >0 en enteras)            x.5: 12 · enteras: 2
+  [OK   ] Total: p_ganar+p_perder+p_push=1                           máx |Δ|=0.00e+00
+  [OK   ] Total: EV recalculado independiente                        máx |Δ|=0.00e+00
+  [OK   ] Total: P. est. = prob_modelo (calibrada)                   máx |Δ|=0.00e+00
+  [OK   ] Total: ev_lo ≤ EV ≤ ev_hi                                  n=13
+  [OK   ] Total: estados válidos y sin «validada»                    Sin EV
+  [OK   ] Total: push definido (0 en x.5, >0 en enteras)             x.5: 13 · enteras: 0
+  [OK   ] push spread: |Δ| ≤ 0.015                                   observado 2.58% · estimado 1.51% · Δ -1.06 pp (n=5511)
+  [OK   ] push spread: observado = 0 EXACTO en x.5                   n=2516 partidos x.5
+  [OK   ] push total: |Δ| ≤ 0.015                                    observado 1.43% · estimado 1.34% · Δ -0.09 pp (n=5511)
+  [OK   ] push total: observado = 0 EXACTO en x.5                    n=2848 partidos x.5
+  [OK   ] push moneyline: fuera de tolerancia → documentado          observado 0.27% · estimado 2.65% · Δ +2.38 pp (n=5511) · limitación en pantalla: True
+  [OK   ] la limitación del push se muestra en la app                caption de la pestaña 🎯
+  [OK   ] pago neto = datos._pago_por_dolar (1e-12)                  
+  [OK   ] prob. implícita = datos._prob_implicita (1e-12)            
+  [OK   ] prob. supera = datos.probabilidad_supera (1e-12)           
+  [OK   ] registro: el EV del motor se guarda tal cual               -0.0123
+  [OK   ] registro: sin ev_num se conserva la fórmula                -0.0455
+  [OK   ] determinismo: dos pasadas idénticas                        n=14
+  [OK   ] sin intentos de red                                        0 intentos
+  [OK   ] tiempo de ejecución < 10 s                                 0.43 s
+
+VEREDICTO: 37/37 comprobaciones OK — el motor calcula el EV con push explícito,
+la interfaz muestra momio · P. eq. · P. est. · push · EV · estado, y nada se marca como validado.
+El sesgo del push está medido: total y spread dentro de tolerancia; el empate de moneyline
+(único fuera de 0.015) queda documentado en pantalla, como exige el pre-registro.
+Recordatorio: esto NO dice que el sistema sea rentable — un EV+ sigue sin validación prospectiva
+(pre-registro lab/pre_registro_motor_ev.md; registro fiel como única evidencia limpia).

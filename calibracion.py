@@ -40,13 +40,21 @@ ridge 1e-6, mismo orden de datos). `tests/test_calibracion.py` los re-ajusta
 desde el CSV real y verifica que coinciden al 1e-9: si ese test falla, no usar
 la app hasta investigar.
 
+Covarianza congelada
+--------------------
+`COVARIANZAS` es la matriz H⁻¹ en el óptimo de ESE MISMO ajuste (Hessiana con
+el ridge mínimo 1e-6). No es una inferencia exacta: sirve para poner una banda
+honesta al calibrado por error de estimación de los coeficientes
+(`intervalo_prob`, delta method) — no cubre cambio de régimen ni error de
+modelo. El test de re-ajuste la verifica junto con los coeficientes.
+
 Refit (al cerrar una temporada nueva)
 -------------------------------------
 1) Re-ejecutar `lab/calibracion.py` con la temporada recién cerrada y aplicar
    las mismas puertas pre-registradas (si cambian las reglas, nuevo
    pre-registro antes de mirar resultados).
-2) Actualizar `COEFICIENTES` y `VERSION_CALIBRACION` aquí, los anclajes de
-   `tests/test_calibracion.py` y anotarlo en `ESTADO_ACTUAL.md`.
+2) Actualizar `COEFICIENTES`, `COVARIANZAS` y `VERSION_CALIBRACION` aquí, los
+   anclajes de `tests/test_calibracion.py` y anotarlo en `ESTADO_ACTUAL.md`.
 """
 
 import numpy as np
@@ -66,6 +74,22 @@ COEFICIENTES = {
                   "b1": 0.005876234783138599, "b2": 1.030927042008087},
 }
 MERCADOS = tuple(COEFICIENTES)
+
+# Covarianza (H⁻¹) del MISMO ajuste 2006-2025 de `COEFICIENTES`, en el orden
+# (a, b) o (a, b1, b2). Solo para `intervalo_prob` (delta method). No editar
+# sin el procedimiento de refit de la cabecera.
+COVARIANZAS = {
+    "spread": ((0.000775951707561257, 4.166184148567369e-05),
+               (4.1661841485673696e-05, 0.003533664624384492)),
+    "total": ((0.0007710052679816182, 0.0001265882517724089),
+              (0.0001265882517724089, 0.0040398262314243795)),
+    "moneyline": ((0.0010116503330762686, -0.0002550355703228503,
+                   -0.00024105961882250405),
+                  (-0.0002550355703228505, 0.004979449406227101,
+                   -0.003095880026503321),
+                  (-0.00024105961882250394, -0.0030958800265033213,
+                   0.0035278391655153714)),
+}
 
 
 def logit(p):
@@ -89,7 +113,8 @@ def _newton(X, y, l2=1e-6, max_iter=100, tol=1e-10):
     """Logística por Newton-Raphson (intercepto + pendientes), determinista.
 
     Misma aritmética que `lab/calibracion.py` (de ahí salieron los coeficientes
-    congelados). `l2` es el ridge mínimo sobre las pendientes.
+    congelados). `l2` es el ridge mínimo sobre las pendientes. Devuelve
+    `(beta, cov)`: la covarianza es H⁻¹ en el óptimo (H = XᵀWX + ridge).
     """
     X = np.asarray(X, dtype=float)
     if X.ndim == 1:
@@ -111,20 +136,39 @@ def _newton(X, y, l2=1e-6, max_iter=100, tol=1e-10):
         beta = beta - paso
         if np.max(np.abs(paso)) < tol:
             break
-    return beta
+    p = sigmoide(Xd @ beta)
+    w = p * (1.0 - p)
+    hess = (Xd.T * w) @ Xd + l2 * np.diag(penal)
+    try:
+        cov = np.linalg.inv(hess)
+    except np.linalg.LinAlgError:
+        cov = np.linalg.pinv(hess)
+    return beta, cov
 
 
 def ajustar_platt(p, y):
     """(a, b) de `p_cal = sigmoide(a + b·logit(p))` para datos 0/1 `y`."""
-    beta = _newton(logit(p), np.asarray(y, dtype=float))
-    return float(beta[0]), float(beta[1])
+    a, b, _ = ajustar_platt_cov(p, y)
+    return a, b
+
+
+def ajustar_platt_cov(p, y):
+    """(a, b, cov) del ajuste Platt; `cov` es H⁻¹ en el óptimo (2×2)."""
+    beta, cov = _newton(logit(p), np.asarray(y, dtype=float))
+    return float(beta[0]), float(beta[1]), cov
 
 
 def ajustar_mezcla(p, p_mercado, y):
     """(a, b1, b2) de la mezcla logística modelo + mercado (moneyline)."""
+    a, b1, b2, _ = ajustar_mezcla_cov(p, p_mercado, y)
+    return a, b1, b2
+
+
+def ajustar_mezcla_cov(p, p_mercado, y):
+    """(a, b1, b2, cov) de la mezcla; `cov` es H⁻¹ en el óptimo (3×3)."""
     X = np.column_stack([logit(p), logit(p_mercado)])
-    beta = _newton(X, np.asarray(y, dtype=float))
-    return float(beta[0]), float(beta[1]), float(beta[2])
+    beta, cov = _newton(X, np.asarray(y, dtype=float))
+    return float(beta[0]), float(beta[1]), float(beta[2]), cov
 
 
 def calibrar(mercado, p_modelo, p_mercado=None):
@@ -152,3 +196,45 @@ def calibrar(mercado, p_modelo, p_mercado=None):
         z = (coef["a"] + coef["b1"] * logit(p.to_numpy())
              + coef["b2"] * logit(pm.to_numpy()))
     return pd.Series(sigmoide(z), index=p.index).mask(p.isna())
+
+
+def intervalo_prob(mercado, p_modelo, p_mercado=None, z=1.96):
+    """Banda del calibrado por error de estimación de los coeficientes.
+
+    Delta method sobre el ajuste congelado: en la escala logit, el desvío es
+    `se = sqrt(J·Cov·Jᵀ)` con `COVARIANZAS` (H⁻¹ del ajuste 2006-2025) y la
+    banda es `sigmoide(z_cal ± z·se)`. Devuelve `(lo, hi)` en la MISMA
+    orientación que la entrada (local cubre / over / gana local); para el otro
+    lado, invertir: `(1−hi, 1−lo)`.
+
+    Cubre SOLO el error de estimación de los coeficientes: NO incluye cambio
+    de régimen, error de modelo ni incertidumbre del push (ver el pre-registro
+    `lab/pre_registro_motor_ev.md`). Los vacíos se propagan; moneyline exige
+    `p_mercado` (ValueError si falta).
+    """
+    if mercado not in COEFICIENTES:
+        raise ValueError(
+            f"Mercado desconocido: {mercado!r} (usa: {', '.join(MERCADOS)}).")
+    p = pd.to_numeric(pd.Series(p_modelo), errors="coerce").astype(float)
+    coef = COEFICIENTES[mercado]
+    cov = np.asarray(COVARIANZAS[mercado], dtype=float)
+    x = logit(p.to_numpy())
+    if coef["metodo"] == "platt":
+        J = np.column_stack([np.ones_like(x), x])
+        zc = coef["a"] + coef["b"] * x
+        vacio = p.isna()
+    else:
+        if p_mercado is None:
+            raise ValueError(
+                "La banda de moneyline necesita la probabilidad sin vig del "
+                "mercado (`p_mercado`).")
+        pm = pd.to_numeric(pd.Series(p_mercado), errors="coerce").astype(float)
+        x2 = logit(pm.to_numpy())
+        J = np.column_stack([np.ones_like(x), x, x2])
+        zc = coef["a"] + coef["b1"] * x + coef["b2"] * x2
+        vacio = p.isna() | pm.isna()
+    se2 = np.einsum("ij,jk,ik->i", J, cov, J)
+    se = np.sqrt(np.clip(se2, 0.0, None))
+    lo = pd.Series(sigmoide(zc - z * se), index=p.index).mask(vacio)
+    hi = pd.Series(sigmoide(zc + z * se), index=p.index).mask(vacio)
+    return lo, hi

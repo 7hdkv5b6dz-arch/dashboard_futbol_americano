@@ -1045,10 +1045,13 @@ def registro_desde_picks(picks: pd.DataFrame, momento=None,
 
     Copia la línea, la cuota y las probabilidades LITERALMENTE (sin redondear
     ni inventar) y calcula lo derivado: `id` (temporada|semana|game_id|mercado|
-    lado), probabilidad implícita (con vig) y `ev` ($ por $1, aproximado: los
-    empujes valen ~0 y no se descuentan). Sin cuota real, `prob_implicita` y
-    `ev` quedan VACÍOS: aquí no se asume −110 nunca. Unidades del edge:
-    spread/totales en puntos; moneyline en puntos de probabilidad (0–1).
+    lado), probabilidad implícita (con vig) y `ev` ($ por $1). Si el marco trae
+    `ev_num` (el EV del motor F5, con push explícito, ya calculado por la app),
+    se guarda TAL CUAL; si no, se conserva la fórmula aproximada de siempre
+    (empujes ~0) para llamadas históricas y pruebas. Sin cuota real,
+    `prob_implicita` y `ev` quedan VACÍOS: aquí no se asume −110 nunca.
+    Unidades del edge: spread/totales en puntos; moneyline en puntos de
+    probabilidad (0–1).
     """
     if picks is None or not len(picks):
         return pd.DataFrame(columns=COLUMNAS_REGISTRO_PICKS)
@@ -1060,8 +1063,12 @@ def registro_desde_picks(picks: pd.DataFrame, momento=None,
     cuota = pd.to_numeric(picks["cuota"], errors="coerce")
     prob_modelo = pd.to_numeric(picks["prob_modelo"], errors="coerce")
     pago = (cuota / 100.0).where(cuota > 0, 100.0 / -cuota)
-    ev = (prob_modelo * pago - (1.0 - prob_modelo)).where(
+    ev_aprox = (prob_modelo * pago - (1.0 - prob_modelo)).where(
         cuota.notna() & prob_modelo.notna())
+    ev_num = (pd.to_numeric(picks["ev_num"], errors="coerce")
+              if "ev_num" in picks.columns
+              else pd.Series(float("nan"), index=picks.index))
+    ev = ev_num.where(ev_num.notna(), ev_aprox)
 
     registro = pd.DataFrame({
         "id": (picks["temporada"].astype(int).astype(str) + "|"

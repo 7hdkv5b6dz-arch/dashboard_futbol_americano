@@ -5,7 +5,8 @@ Cubren: la aritmética de `calibrar` (contra una fórmula independiente y
 anclajes congelados), monotonía, propagación de vacíos, el contrato de
 moneyline (exige la probabilidad de mercado), el modo calibrado de
 `datos.evaluar_picks_ml`, la versión compuesta del registro
-(`srs-v2+cal-f4-1`) y —la prueba fuerte— que los coeficientes congelados se
+(`srs-v2+cal-f4-1`), la banda del calibrado (`intervalo_prob`, delta method) y
+—las pruebas fuertes— que los coeficientes y las covarianzas congeladas se
 reproducen re-ajustando el universo estricto 2006–2025 del CSV real (offline
 y determinista).
 
@@ -277,3 +278,68 @@ class TestCoeficientesCongelados(unittest.TestCase):
         self.assertAlmostEqual(a, coef["a"], places=9)
         self.assertAlmostEqual(b1, coef["b1"], places=9)
         self.assertAlmostEqual(b2, coef["b2"], places=9)
+
+    def test_covarianzas_reproducen_las_congeladas(self):
+        """La covarianza (H⁻¹) del mismo ajuste también se congela y se
+        verifica: de ella sale la banda del calibrado (delta method)."""
+        for mercado in ("spread", "total"):
+            tr = self._ventana(mercado)
+            _, _, cov = calibracion.ajustar_platt_cov(tr["p_mod"], tr["y"])
+            np.testing.assert_allclose(
+                cov, np.asarray(calibracion.COVARIANZAS[mercado], dtype=float),
+                rtol=1e-9, atol=0.0, err_msg=mercado)
+
+    def test_covarianza_mezcla_reproduce_la_congelada(self):
+        tr = self._ventana("moneyline")
+        _, _, _, cov = calibracion.ajustar_mezcla_cov(
+            tr["p_mod"], tr["p_mer"], tr["y"])
+        np.testing.assert_allclose(
+            cov, np.asarray(calibracion.COVARIANZAS["moneyline"], dtype=float),
+            rtol=1e-9, atol=0.0)
+
+
+class TestIntervaloProb(unittest.TestCase):
+    """La banda del calibrado por error de estimación (delta method)."""
+
+    def test_contiene_el_punto_y_no_es_degenerada(self):
+        for mercado, pm in (("spread", None), ("total", None),
+                            ("moneyline", 0.5)):
+            for p in (0.35, 0.5, 0.65, 0.8):
+                lo, hi = calibracion.intervalo_prob(
+                    mercado, pd.Series([p]),
+                    None if pm is None else pd.Series([pm]))
+                punto = float(calibracion.calibrar(mercado, p, pm).iloc[0])
+                ancho = float(hi.iloc[0]) - float(lo.iloc[0])
+                self.assertLess(float(lo.iloc[0]), punto,
+                                msg=f"{mercado} p={p}")
+                self.assertGreater(float(hi.iloc[0]), punto,
+                                   msg=f"{mercado} p={p}")
+                self.assertGreater(ancho, 0.0)
+                self.assertLess(ancho, 0.15)
+
+    def test_banda_mas_ancha_en_los_extremos(self):
+        lo_c, hi_c = calibracion.intervalo_prob("spread", pd.Series([0.5]))
+        lo_x, hi_x = calibracion.intervalo_prob("spread", pd.Series([0.8]))
+        ancho_c = float(hi_c.iloc[0]) - float(lo_c.iloc[0])
+        ancho_x = float(hi_x.iloc[0]) - float(lo_x.iloc[0])
+        self.assertGreater(ancho_x, ancho_c)
+
+    def test_vacios_se_propagan_y_contrato(self):
+        lo, hi = calibracion.intervalo_prob(
+            "spread", pd.Series([np.nan, 0.5]))
+        self.assertTrue(np.isnan(float(lo.iloc[0])))
+        self.assertTrue(np.isnan(float(hi.iloc[0])))
+        self.assertTrue(np.isfinite(float(lo.iloc[1])))
+        lo_ml, hi_ml = calibracion.intervalo_prob(
+            "moneyline", pd.Series([0.6]), pd.Series([np.nan]))
+        self.assertTrue(np.isnan(float(lo_ml.iloc[0])))
+        with self.assertRaises(ValueError):
+            calibracion.intervalo_prob("moneyline", 0.6)
+        with self.assertRaises(ValueError):
+            calibracion.intervalo_prob("nba", 0.6)
+
+    def test_extremos_recortados(self):
+        lo, hi = calibracion.intervalo_prob(
+            "total", pd.Series([0.0, 1.0]))
+        self.assertTrue(np.isfinite(lo.to_numpy()).all())
+        self.assertTrue(np.isfinite(hi.to_numpy()).all())

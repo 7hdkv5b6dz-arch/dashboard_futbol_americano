@@ -800,6 +800,31 @@ class RegistroFielDePicks(unittest.TestCase):
         with self.assertRaises(ValueError):
             datos.registro_desde_picks(pd.DataFrame([{"temporada": 2026}]))
 
+    def test_registro_usa_ev_num_del_motor_si_viene(self):
+        """El EV del motor F5 (push explícito) se guarda TAL CUAL."""
+        fila = self._fila_registro(ev_num=-0.0123)
+        reg = datos.registro_desde_picks(
+            pd.DataFrame([fila]), momento="2026-10-16T10:00:00")
+        self.assertAlmostEqual(float(reg["ev"].iloc[0]), -0.0123, places=12)
+
+    def test_registro_sin_ev_num_conserva_la_formula_aproximada(self):
+        """Sin `ev_num` (histórico/pruebas) no cambia nada: fórmula de siempre."""
+        fila = self._fila_registro(ev_num=float("nan"))
+        reg = datos.registro_desde_picks(
+            pd.DataFrame([fila]), momento="2026-10-16T10:00:00")
+        self.assertAlmostEqual(
+            float(reg["ev"].iloc[0]), 0.62 * (100.0 / 110.0) - 0.38, places=12)
+
+    def test_registro_mezcla_ev_num_y_fallback(self):
+        f1 = self._fila_registro(ev_num=-0.01)
+        f2 = self._fila_registro(game_id="2026_06_AAA_CCC",
+                                 ev_num=float("nan"))
+        reg = datos.registro_desde_picks(
+            pd.DataFrame([f1, f2]), momento="2026-10-16T10:00:00")
+        self.assertAlmostEqual(float(reg["ev"].iloc[0]), -0.01, places=12)
+        self.assertAlmostEqual(
+            float(reg["ev"].iloc[1]), 0.62 * (100.0 / 110.0) - 0.38, places=12)
+
     def test_captura_dedupe_y_congelacion(self):
         with tempfile.TemporaryDirectory() as carpeta:
             ruta = Path(carpeta) / "registro.csv"

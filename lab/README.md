@@ -23,11 +23,19 @@ fuera, en una carpeta temporal).
   AST (sin Streamlit) y comprueba selección, probabilidad congelada, EV,
   moneyline y versión del registro.
 - `salida_integracion_f4.txt` — Salida congelada de la integración (14/14).
+- `pre_registro_motor_ev.md` — Pre-registro de F5 (motor de EV con push
+  explícito), escrito antes de medir; su sha1 queda impreso en la cabecera de
+  la salida de F5.
+- `verificacion_motor_ev.py` — Verificación de F5: matemáticas del motor,
+  jornada pendiente real (funciones de `app.py` por AST), push empírico
+  2006–2025 contra lo observado, regresión contra `datos` y contrato `ev_num`.
+- `salida_motor_ev.txt` — Salida congelada de F5 (37/37 comprobaciones).
 
 La calibración **adoptada** (producción) vive fuera del laboratorio, en
-`calibracion.py` (raíz del proyecto), con coeficientes congelados y pruebas
-propias (`tests/test_calibracion.py`); el laboratorio es lo que produjo la
-evidencia.
+`calibracion.py` (raíz del proyecto), con coeficientes y covarianzas congelados
+y pruebas propias (`tests/test_calibracion.py`); el laboratorio es lo que
+produjo la evidencia. Lo mismo para el motor de EV **adoptado**: `motor_ev.py`
+(raíz), con pruebas propias en `tests/test_motor_ev.py`.
 
 ## Cómo se ejecuta
 
@@ -37,6 +45,7 @@ cd dashboard_futbol_americano
 .venv/bin/python -B lab/calibracion.py            # F4
 .venv/bin/python -B lab/verificacion_calibracion.py  # apoyo de F4
 .venv/bin/python -B lab/verificacion_integracion.py  # integración (F4b)
+.venv/bin/python -B lab/verificacion_motor_ev.py     # motor de EV (F5)
 ```
 
 No escribe ningún archivo del proyecto, no usa red (bloquea sockets durante el
@@ -73,6 +82,13 @@ cálculo) y no consume créditos de ninguna API. Tarda unos segundos.
 - Calibración (F4): walk-forward puro (la temporada evaluada nunca informa su
   propio ajuste); ventana de evaluación 2014–2025; las puertas G1–G5 están
   fijadas en `pre_registro_calibracion.md` y no se cambian tras ver resultados.
+- Motor de EV (F5): push explícito (0 exacto en líneas x.5 — aritmético;
+  normal discretizada en enteras y empates) con **sesgo medido** contra
+  2006–2025 (tolerancia pre-registrada 0.015 por mercado: total y spread
+  agregado dentro; el empate de moneyline queda fuera y se documenta en
+  pantalla, como fija `pre_registro_motor_ev.md`). La banda del EV cubre solo
+  el error de estimación de los coeficientes de calibración (delta method con
+  la covarianza congelada).
 
 ## Reglas de uso para las fases siguientes
 
