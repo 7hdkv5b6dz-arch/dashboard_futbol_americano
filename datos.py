@@ -14,6 +14,9 @@ necesitamos para el análisis:
     - clima: techo (interior/exterior), viento y temperatura
     - MODELO de pronósticos (walk-forward, sin ver el futuro): margen y total
       esperados de cada partido, para compararlos con la línea del mercado
+    - precios entre casas (The Odds API, opcional con clave gratuita): cuotas
+      de la próxima jornada en varias casas deportivas, para comparar la
+      comisión (vig) de cada una
 
 Si no hay internet, cae de vuelta a los datos de ejemplo (data/partidos.csv).
 """
@@ -325,6 +328,233 @@ def resumen_por_temporada(partidos: pd.DataFrame, desde: int = 2020) -> pd.DataF
         "roi_underdogs": con_spread.groupby("season")["gan_dog"].mean() * 100,
     }).rename_axis("temporada").reset_index()
     return resumen
+
+
+# ---------------------------------------------------------------------------
+# PRECIOS ENTRE CASAS (The Odds API — clave personal y gratuita)
+# ---------------------------------------------------------------------------
+# nflverse solo trae UN precio por partido. Para comparar precios entre casas
+# deportivas usamos The Odds API (https://the-odds-api.com): su plan gratuito
+# da 500 créditos al mes (sin tarjeta), cubre las casas más conocidas de
+# EE. UU. y Europa, y solo necesita una clave personal que se guarda en
+# `.streamlit/secrets.toml` (ese archivo NO se sube a GitHub). Una consulta
+# de spreads+totales gasta 2 créditos por región, así que la app cachea la
+# respuesta y muestra cuántos créditos quedan.
+ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/"
+
+
+def cargar_precios_casas(api_key: str, regiones: str = "us",
+                         mercados: str = "spreads,totals"):
+    """Cuotas actuales de la NFL en varias casas (The Odds API).
+
+    Devuelve `(tabla, uso)`: la tabla larga de `parsear_precios_casas(...)` y
+    un dict con los créditos del plan gratuito (`usados`, `restantes`,
+    `ultima`). Lanza `ValueError` con un mensaje claro en español si la clave
+    no sirve, no quedan consultas o no hay conexión.
+    """
+    try:
+        respuesta = requests.get(
+            ODDS_API_URL,
+            params={
+                "apiKey": api_key,
+                "regions": regiones,
+                "markets": mercados,
+                "oddsFormat": "american",
+                "dateFormat": "iso",
+            },
+            timeout=30,
+        )
+    except requests.RequestException as error:
+        raise ValueError(f"Sin conexión con The Odds API ({error}).") from error
+
+    if respuesta.status_code == 401:
+        raise ValueError(
+            "La clave de The Odds API no es válida o está incompleta: "
+            "cópiala otra vez desde el correo que te llegó al registrarte."
+        )
+    if respuesta.status_code == 429:
+        raise ValueError(
+            "Se agotaron las consultas gratuitas del mes (500). "
+            "Se renuevan el día 1 del mes que viene."
+        )
+    if respuesta.status_code != 200:
+        raise ValueError(
+            f"The Odds API respondió {respuesta.status_code}: "
+            f"{respuesta.text[:160]}"
+        )
+
+    tabla = parsear_precios_casas(respuesta.json())
+    uso = {
+        "usados": respuesta.headers.get("x-requests-used"),
+        "restantes": respuesta.headers.get("x-requests-remaining"),
+        "ultima": respuesta.headers.get("x-requests-last"),
+    }
+    return tabla, uso
+
+
+def parsear_precios_casas(payload) -> pd.DataFrame:
+    """Respuesta JSON de The Odds API → tabla larga (una fila por precio).
+
+    Columnas: juego_id, inicio, local, visitante, casa, mercado, lado, linea
+    y cuota. En «spreads» el lado es el nombre del equipo; en «totals» es
+    "Over"/"Under". `linea` es el punto del spread o del total.
+    """
+    columnas = ["juego_id", "inicio", "local", "visitante", "casa",
+                "mercado", "lado", "linea", "cuota"]
+    filas = []
+    for juego in payload or []:
+        for casa in juego.get("bookmakers") or []:
+            for mercado in casa.get("markets") or []:
+                for lado in mercado.get("outcomes") or []:
+                    filas.append({
+                        "juego_id": juego.get("id"),
+                        "inicio": juego.get("commence_time"),
+                        "local": juego.get("home_team"),
+                        "visitante": juego.get("away_team"),
+                        "casa": casa.get("title"),
+                        "mercado": mercado.get("key"),
+                        "lado": lado.get("name"),
+                        "linea": lado.get("point"),
+                        "cuota": lado.get("price"),
+                    })
+    tabla = pd.DataFrame(filas, columns=columnas)
+    if len(tabla):
+        tabla["cuota"] = pd.to_numeric(tabla["cuota"], errors="coerce")
+        tabla["linea"] = pd.to_numeric(tabla["linea"], errors="coerce")
+    return tabla
+
+
+def abreviatura_de(nombre: str, equipos: pd.DataFrame):
+    """Nombre completo de la API («Kansas City Chiefs») → abreviatura («KC»).
+
+    Primero busca coincidencia exacta con `team_name`; si no, prueba a que el
+    nombre termine en el apodo («... Chiefs»). Devuelve `None` si no lo
+    reconoce (la vista entonces muestra el nombre tal cual, sin romperse).
+    """
+    if not isinstance(nombre, str) or equipos is None or not len(equipos):
+        return None
+    exacto = equipos["team_name"] == nombre
+    if exacto.any():
+        return equipos.loc[exacto, "team_abbr"].iloc[0]
+    apodos = equipos[equipos["team_nick"].notna()]
+    acaba = apodos["team_nick"].astype(str).apply(nombre.endswith)
+    if acaba.any():
+        return apodos.loc[acaba, "team_abbr"].iloc[0]
+    return None
+
+
+def analizar_precios_casas(tabla: pd.DataFrame) -> dict:
+    """Resúmenes de la vista «precios entre casas».
+
+    Devuelve un dict con:
+      - `juegos`: metadatos de cada partido (una fila por juego).
+      - `mejores`: por juego/mercado/lado, la mejor y la peor cuota (y qué
+        casa las ofrece), en la línea más común entre las casas, más la
+        ganancia por $1 de cada una.
+      - `por_casa`: vig medio (%) de cada casa y partidos que cubre.
+      - `vig_juego`: por juego/mercado, el vig medio de las casas y el vig
+        tomando el mejor precio de cada lado (ambos en %).
+      - `resumen`: totales para las tarjetas (juegos, casas, vig medio,
+        vig con el mejor precio).
+
+    El vig («hold») de una casa en un mercado es la suma de las
+    probabilidades implícitas de sus dos lados menos 1: lo que cobra de
+    comisión si el dinero se reparte parejo.
+    """
+    vacio = {
+        "juegos": pd.DataFrame(
+            columns=["juego_id", "inicio", "local", "visitante"]),
+        "mejores": pd.DataFrame(
+            columns=["juego_id", "mercado", "lado", "linea", "mejor_cuota",
+                     "casa_mejor", "peor_cuota", "casa_peor",
+                     "pago_mejor", "pago_peor"]),
+        "por_casa": pd.DataFrame(columns=["casa", "vig_medio", "partidos"]),
+        "vig_juego": pd.DataFrame(
+            columns=["juego_id", "mercado", "vig_medio", "vig_mejor",
+                     "n_casas"]),
+        "resumen": {"juegos": 0, "casas": 0, "vig_medio": float("nan"),
+                    "vig_mejor": float("nan")},
+    }
+    if tabla is None or not len(tabla):
+        return vacio
+
+    t = tabla.dropna(subset=["cuota"]).copy()
+    t["prob"] = _prob_implicita(t["cuota"])
+    t = t[t["prob"].notna()]
+    if not len(t):
+        return vacio
+
+    # --- vig de cada casa: solo cuando publica los DOS lados del mercado ---
+    dos_lados = t.groupby(["juego_id", "mercado", "casa"]).filter(
+        lambda g: len(g) == 2 and g["lado"].nunique() == 2
+    )
+    vig_casa = (dos_lados.groupby(["juego_id", "mercado", "casa"])["prob"]
+                .sum().sub(1).mul(100))
+    vig_casa.name = "vig"
+
+    por_casa = (
+        vig_casa.groupby(level="casa").agg(["mean", "count"])
+        .rename(columns={"mean": "vig_medio", "count": "partidos"})
+        .reset_index()
+        .sort_values("vig_medio")
+        .reset_index(drop=True)
+    )
+
+    vig_partido = (
+        vig_casa.groupby(level=["juego_id", "mercado"])
+        .agg(["mean", "count"])
+        .rename(columns={"mean": "vig_medio", "count": "n_casas"})
+        .reset_index()
+    )
+
+    # --- mejor y peor precio por lado, en la línea más común del mercado ---
+    def _linea_comun(serie):
+        modas = serie.mode()
+        return modas.iloc[0] if len(modas) else np.nan
+
+    t["linea_comun"] = t.groupby(["juego_id", "mercado", "lado"])["linea"] \
+        .transform(_linea_comun)
+    misma_linea = t[t["linea"].isna() | t["linea"].eq(t["linea_comun"])]
+
+    orden = misma_linea.sort_values(
+        ["juego_id", "mercado", "lado", "cuota"],
+        ascending=[True, True, True, False],
+    )
+    mejor = orden.drop_duplicates(["juego_id", "mercado", "lado"], keep="first")[
+        ["juego_id", "mercado", "lado", "linea_comun", "cuota", "casa"]
+    ].rename(columns={"cuota": "mejor_cuota", "casa": "casa_mejor",
+                      "linea_comun": "linea"})
+    peor = orden.drop_duplicates(["juego_id", "mercado", "lado"], keep="last")[
+        ["juego_id", "mercado", "lado", "cuota", "casa"]
+    ].rename(columns={"cuota": "peor_cuota", "casa": "casa_peor"})
+    mejores = mejor.merge(peor, on=["juego_id", "mercado", "lado"])
+    mejores["pago_mejor"] = _pago_por_dolar(mejores["mejor_cuota"])
+    mejores["pago_peor"] = _pago_por_dolar(mejores["peor_cuota"])
+
+    # --- vig tomando el mejor precio de cada lado ---
+    prob_mejor = misma_linea.groupby(["juego_id", "mercado", "lado"])["prob"].min()
+    cuenta = prob_mejor.groupby(level=["juego_id", "mercado"]).agg(["sum", "count"])
+    vig_mejor = ((cuenta["sum"] - 1) * 100).where(cuenta["count"] == 2)
+    vig_mejor = vig_mejor.rename("vig_mejor").reset_index()
+
+    vig_juego = vig_partido.merge(
+        vig_mejor, on=["juego_id", "mercado"], how="left"
+    )[["juego_id", "mercado", "vig_medio", "vig_mejor", "n_casas"]]
+
+    juegos = (
+        t[["juego_id", "inicio", "local", "visitante"]]
+        .drop_duplicates("juego_id")
+        .reset_index(drop=True)
+    )
+
+    resumen = {
+        "juegos": int(t["juego_id"].nunique()),
+        "casas": int(t["casa"].nunique()),
+        "vig_medio": float(por_casa["vig_medio"].mean()) if len(por_casa) else float("nan"),
+        "vig_mejor": float(vig_juego["vig_mejor"].mean()) if len(vig_juego) else float("nan"),
+    }
+    return {"juegos": juegos, "mejores": mejores, "por_casa": por_casa,
+            "vig_juego": vig_juego, "resumen": resumen}
 
 
 # ---------------------------------------------------------------------------

@@ -327,6 +327,46 @@ def fecha_de_datos():
     return "sin archivo local"
 
 
+def clave_odds_api():
+    """Clave de The Odds API: primero la de la sesión, luego secrets.toml."""
+    clave = st.session_state.get("odds_api_key", "")
+    if clave:
+        return clave
+    try:
+        return str(st.secrets.get("ODDS_API_KEY", "") or "")
+    except Exception:
+        # Todavía no hay archivo de secretos: la pestaña explica cómo crearlo.
+        return ""
+
+
+def guardar_clave(api_key):
+    """Guarda la clave de The Odds API en .streamlit/secrets.toml (solo local)."""
+    carpeta = Path(__file__).resolve().parent / ".streamlit"
+    carpeta.mkdir(exist_ok=True)
+    (carpeta / "secrets.toml").write_text(
+        "# Clave gratuita de The Odds API — archivo local, NO se sube a GitHub\n"
+        f'ODDS_API_KEY = "{api_key}"\n',
+        encoding="utf-8",
+    )
+
+
+def nombre_corto(nombre_api):
+    """«Kansas City Chiefs» → «Chiefs» (deja el nombre tal cual si no lo ubica)."""
+    abreviatura = datos.abreviatura_de(nombre_api, equipos)
+    return APODOS.get(abreviatura, nombre_api) if abreviatura else nombre_api
+
+
+@st.cache_data(ttl=900, show_spinner="Consultando cuotas en vivo (gasta 2-4 créditos)...")
+def traer_precios_casas(clave, regiones):
+    """Cuotas entre casas, cacheadas 15 minutos para no gastar créditos.
+
+    Devuelve `(tabla, uso, momento)`: la tabla larga de precios, el uso de
+    créditos del mes y la hora (local) en que se hizo la consulta.
+    """
+    tabla, uso = datos.cargar_precios_casas(clave, regiones=regiones)
+    return tabla, uso, datetime.now().strftime("%d/%m %H:%M")
+
+
 # ---------------------------------------------------------------------------
 # ENCABEZADO
 # ---------------------------------------------------------------------------
@@ -454,12 +494,13 @@ c4.metric(
          "en los partidos filtrados. Negativo = la casa gana, como esperarías.",
 )
 
-tab_picks, tab_ats, tab_totales, tab_clave, tab_mercado, tab_temporadas = st.tabs([
+tab_picks, tab_ats, tab_totales, tab_clave, tab_mercado, tab_precios, tab_temporadas = st.tabs([
     "🎯 Picks del modelo",
     "📈 ATS por equipo",
     "🎲 Totales y clima",
     "🧮 Números clave",
     "💰 Mercado y vig",
+    "🛒 Precios entre casas",
     "📊 Temporadas",
 ])
 
@@ -1473,7 +1514,259 @@ Si el EV es negativo, por muchas rachas que tengas, a largo plazo pierdes.
 
 
 # ===========================================================================
-# TAB 6 — TEMPORADAS COMPARADAS
+# TAB 6 — PRECIOS ENTRE CASAS (The Odds API)
+# ===========================================================================
+with tab_precios:
+    st.header("🛒 Precios entre casas (compara antes de apostar)")
+
+    st.markdown(
+        "El mismo partido se paga distinto en cada casa: la diferencia es la "
+        "**comisión (*vig*)** que cobra cada una. Aquí se bajan las cuotas "
+        "**reales y actuales** de la próxima jornada desde **The Odds API** "
+        "(plan gratuito) y se ve quién paga mejor cada lado. Comparar precios "
+        "**no crea una ventaja**: abarata la comisión. La ventaja hay que "
+        "ganarla acertando (mira el historial del modelo, que es honesto)."
+    )
+
+    clave = clave_odds_api()
+
+    if not clave:
+        st.info(
+            "Para encender esta pestaña hace falta una **clave gratuita** de "
+            "The Odds API (500 consultas al mes, sin tarjeta). Se tarda 2 "
+            "minutos:\n\n"
+            "1. Entra en **[the-odds-api.com](https://the-odds-api.com)** y "
+            "pulsa *Get API Key → Starter (Free)*.\n"
+            "2. Escribe tu correo: la clave te llega por email (mira también "
+            "el spam; a veces tarda unos minutos).\n"
+            "3. Pégala justo aquí abajo y pulsa **Guardar**.\n\n"
+            "Se queda solo en tu Mac (`.streamlit/secrets.toml`, ignorado por "
+            "GitHub). Mientras no la tengas, el resto de la app funciona igual.",
+            icon="🔑",
+        )
+
+    with st.expander("🔑 Pegar o cambiar la clave de The Odds API",
+                     expanded=not clave):
+        nueva_clave = st.text_input(
+            "Clave (no se muestra en pantalla):",
+            type="password", key="entrada_clave_odds",
+        )
+        c1, c2 = st.columns([1, 3])
+        if c1.button("💾 Guardar clave"):
+            limpia = nueva_clave.strip().replace('"', "")
+            if len(limpia) >= 20:
+                guardar_clave(limpia)
+                st.session_state["odds_api_key"] = limpia
+                st.rerun()
+            else:
+                st.warning("Eso no parece una clave: cópiala completa del correo.")
+        c2.caption(
+            "La clave se queda en tu equipo; nunca se sube a GitHub ni se enseña."
+        )
+
+    if clave:
+        regiones_txt = st.radio(
+            "Casas a consultar:",
+            ["🇺🇸 Solo EE. UU. (2 créditos)", "🌍 EE. UU. + Europa (4 créditos)"],
+            horizontal=True,
+        )
+        regiones = "us" if regiones_txt.startswith("🇺🇸") else "us,eu"
+
+        if st.button("🔄 Traer precios ahora",
+                     help="Ignora la caché de 15 minutos y consulta de nuevo."):
+            traer_precios_casas.clear()
+
+        try:
+            tabla_casas, uso, momento = traer_precios_casas(clave, regiones)
+            error_casas = None
+        except ValueError as error:
+            tabla_casas, uso, momento, error_casas = pd.DataFrame(), {}, "", error
+
+        if error_casas is not None:
+            st.error(f"⚠️ {error_casas}")
+        else:
+            st.caption(
+                f"Consulta de las {momento} (se cachea 15 minutos) · créditos "
+                f"gratis restantes este mes: **{uso.get('restantes') or '?'}** "
+                "(cada consulta gasta 2, o 4 con Europa, de los 500 del plan "
+                "gratuito)."
+            )
+
+            # Solo la próxima jornada: los partidos ya empezados no interesan aquí.
+            tabla_casas["inicio_dt"] = pd.to_datetime(
+                tabla_casas["inicio"], utc=True, errors="coerce")
+            ahora = pd.Timestamp.now(tz="UTC")
+            tabla_futura = tabla_casas[tabla_casas["inicio_dt"] > ahora].copy()
+
+            analisis_casas = datos.analizar_precios_casas(tabla_futura)
+            resumen_casas = analisis_casas["resumen"]
+
+            if not resumen_casas["juegos"]:
+                st.info(
+                    "Ahora mismo no hay partidos próximos con cuotas nuevas "
+                    "(la jornada ya empezó o no hay líneas publicadas todavía). "
+                    "Vuelve a mirar más cerca del domingo."
+                )
+            else:
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Partidos próximos", resumen_casas["juegos"],
+                          border=True,
+                          help="Partidos que todavía no han empezado.")
+                m2.metric("Casas comparadas", resumen_casas["casas"],
+                          border=True,
+                          help="Casa deportiva distinta con cuotas publicadas.")
+                m3.metric("Vig medio de las casas",
+                          f"{resumen_casas['vig_medio']:.1f}%", border=True,
+                          help="Comisión media (''hold'') que cobra cada casa "
+                               "si el dinero se reparte parejo. Con -110 a "
+                               "ambos lados son 4.8%.")
+                m4.metric(
+                    "Vig con el mejor precio",
+                    f"{resumen_casas['vig_mejor']:.1f}%",
+                    delta=f"{resumen_casas['vig_mejor'] - resumen_casas['vig_medio']:+.1f} pts vs media",
+                    delta_color="inverse",
+                    border=True,
+                    help="Lo que cuesta el mercado si tomas SIEMPRE el precio "
+                         "más alto de cada lado, cambiando de casa. Menos es "
+                         "mejor (y esto es lo que regala el line shopping).",
+                )
+
+                # Gráfica: comisión media por casa
+                fig = px.bar(
+                    analisis_casas["por_casa"], x="casa", y="vig_medio",
+                    custom_data=["partidos"], text="vig_medio",
+                    title="Comisión media (vig) de cada casa, próxima jornada",
+                    labels={"casa": "", "vig_medio": "Vig (%)"},
+                )
+                fig.update_traces(
+                    marker_color="#FF6B6B", texttemplate="%{text:.1f}%",
+                    textposition="outside",
+                    hovertemplate="%{x}: %{y:.2f}% de vig"
+                                  "<br>Partidos cubiertos: %{customdata[0]}"
+                                  "<extra></extra>",
+                )
+                fig.add_hline(
+                    y=resumen_casas["vig_mejor"], line_dash="dash",
+                    line_color="#00C46A",
+                    annotation_text="mejor precio de cada lado",
+                    annotation_font_color="#00C46A",
+                )
+                fig.update_xaxes(tickangle=-20)
+                mostrar_grafica(fig, alto=470)
+                st.caption(
+                    "Menos es más: la casa con la barra más baja te cobra "
+                    "menos por apostar. La línea verde marca lo que costaría "
+                    "tomar el mejor precio de cada lado — la meta del *line "
+                    "shopping*."
+                )
+
+                # Tabla por partido
+                mercado_txt = st.radio(
+                    "Mercado a comparar:",
+                    ["Spread (contra la línea)", "Totales (over/under)"],
+                    horizontal=True, key="mercado_casas",
+                )
+                mercado_casas = ("spreads" if mercado_txt.startswith("Spread")
+                                 else "totals")
+
+                juegos_casas = analisis_casas["juegos"].sort_values("inicio")
+                vj = analisis_casas["vig_juego"]
+                mj = analisis_casas["mejores"]
+
+                filas_casas = []
+                for _, meta in juegos_casas.iterrows():
+                    lados = mj[(mj["juego_id"] == meta["juego_id"])
+                               & (mj["mercado"] == mercado_casas)]
+                    vfila = vj[(vj["juego_id"] == meta["juego_id"])
+                               & (vj["mercado"] == mercado_casas)]
+                    if not len(lados) or not len(vfila):
+                        continue
+                    vfila = vfila.iloc[0]
+
+                    cuando = pd.to_datetime(meta["inicio"], utc=True) \
+                        .tz_convert("America/New_York")
+                    cuando_txt = cuando.strftime("%d/%m %H:%M")
+
+                    if mercado_casas == "spreads":
+                        lado_local, lado_visita = meta["local"], meta["visitante"]
+                        linea_local = lados[lados["lado"] == lado_local]
+                        linea_txt = (
+                            f"{nombre_corto(lado_local)} "
+                            f"{linea_local.iloc[0]['linea']:+g}"
+                            if len(linea_local) else "—"
+                        )
+                        titulo_local, titulo_visita = "Mejor local", "Mejor visitante"
+                    else:
+                        lado_local, lado_visita = "Over", "Under"
+                        linea_total = lados[lados["lado"] == "Over"]
+                        linea_txt = (
+                            f"Total {linea_total.iloc[0]['linea']:g}"
+                            if len(linea_total) else "—"
+                        )
+                        titulo_local, titulo_visita = "Mejor Over", "Mejor Under"
+
+                    def celda(lado):
+                        casa_lado = lados[lados["lado"] == lado]
+                        if not len(casa_lado):
+                            return "—"
+                        fila_lado = casa_lado.iloc[0]
+                        return (f"{fila_lado['mejor_cuota']:+.0f} "
+                                f"({fila_lado['casa_mejor']})")
+
+                    dif_precio = (
+                        (lados["pago_mejor"] - lados["pago_peor"]).mean() * 100
+                    )
+                    vig_mejor_txt = (
+                        f"{vfila['vig_mejor']:.1f}%"
+                        if pd.notna(vfila["vig_mejor"]) else "—"
+                    )
+                    filas_casas.append({
+                        "Partido": f"{nombre_corto(meta['visitante'])} @ "
+                                   f"{nombre_corto(meta['local'])}",
+                        "Cuándo (ET)": cuando_txt,
+                        "Línea": linea_txt,
+                        titulo_local: celda(lado_local),
+                        titulo_visita: celda(lado_visita),
+                        "Dif. por $100": f"+${dif_precio:.0f}",
+                        "Vig medio": f"{vfila['vig_medio']:.1f}%",
+                        "Vig mejor": vig_mejor_txt,
+                    })
+
+                if filas_casas:
+                    tabla_vista = pd.DataFrame(filas_casas)
+                    st.dataframe(
+                        tabla_vista, width="stretch", hide_index=True,
+                        height=min(480, 40 + 36 * len(tabla_vista)),
+                    )
+                    st.caption(
+                        "La **mejor cuota** de cada lado es la más alta (la que "
+                        "te paga más). Para comparar peras con peras solo se "
+                        "usan las cuotas de la **línea más común** entre las "
+                        "casas; si una casa ofrece medio punto distinto, eso a "
+                        "veces vale más que el precio: míralo con lupa. La "
+                        "columna de $100 es la diferencia de ganancia entre la "
+                        "casa más barata y la más cara en esa misma apuesta."
+                    )
+                    st.caption(
+                        "⚠️ Comparar precios **no crea una ventaja**: baja la "
+                        "comisión. Con el mejor precio en −105 aún hace falta "
+                        "ganar ~51.2% para no perder. La paciencia para "
+                        "comparar es gratis; el edge, no."
+                    )
+                else:
+                    st.info(
+                        "No hay cuotas de este mercado para los partidos "
+                        "próximos."
+                    )
+
+                st.caption(
+                    "Datos: The Odds API (cuotas reales de la próxima "
+                    "jornada). 🔞 +18 · Juego responsable."
+                )
+
+
+# ===========================================================================
+# TAB 7 — TEMPORADAS COMPARADAS
 # ===========================================================================
 with tab_temporadas:
     st.header("📊 Temporadas comparadas (2020–hoy)")

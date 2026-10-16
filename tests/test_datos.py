@@ -5,13 +5,14 @@ Cómo correrlas (desde la carpeta del proyecto):
     .venv/bin/python -m unittest discover -s tests -t .
 
 Cubren: cuotas y vig, convención del spread, push, totales, primetime
-(incluidas las correcciones de 1999–2005), el resumen por temporada, el
-respaldo sin conexión y el modelo de pronósticos (que NO use información
-del futuro: walk-forward).
+(incluidas las correcciones de 1999–2005), el resumen por temporada, los
+precios entre casas (The Odds API), el respaldo sin conexión y el modelo de
+pronósticos (que NO use información del futuro: walk-forward).
 """
 
 import itertools
 import unittest
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -245,6 +246,166 @@ class ResumenPorTemporada(unittest.TestCase):
         r = datos.resumen_por_temporada(self._calendario(), desde=2030)
         self.assertTrue(r.empty)
         self.assertIn("temporada", r.columns)
+
+
+class PreciosEntreCasas(unittest.TestCase):
+    """Cuotas de la próxima jornada en varias casas (The Odds API)."""
+
+    @staticmethod
+    def _payload():
+        """Respuesta de laboratorio: 1 partido, 3 casas, spreads y totales."""
+        return [{
+            "id": "juego1",
+            "sport_key": "americanfootball_nfl",
+            "commence_time": "2026-10-18T17:00:00Z",
+            "home_team": "Kansas City Chiefs",
+            "away_team": "Buffalo Bills",
+            "bookmakers": [
+                {"key": "draftkings", "title": "DraftKings", "markets": [
+                    {"key": "spreads", "outcomes": [
+                        {"name": "Kansas City Chiefs", "price": -110, "point": -3.0},
+                        {"name": "Buffalo Bills", "price": -110, "point": 3.0},
+                    ]},
+                    {"key": "totals", "outcomes": [
+                        {"name": "Over", "price": -110, "point": 48.5},
+                        {"name": "Under", "price": -110, "point": 48.5},
+                    ]},
+                ]},
+                {"key": "fanduel", "title": "FanDuel", "markets": [
+                    {"key": "spreads", "outcomes": [
+                        {"name": "Kansas City Chiefs", "price": -105, "point": -3.0},
+                        {"name": "Buffalo Bills", "price": -115, "point": 3.0},
+                    ]},
+                ]},
+                {"key": "betmgm", "title": "BetMGM", "markets": [
+                    {"key": "spreads", "outcomes": [
+                        {"name": "Kansas City Chiefs", "price": -112, "point": -3.0},
+                        {"name": "Buffalo Bills", "price": -108, "point": 3.0},
+                    ]},
+                ]},
+            ],
+        }]
+
+    def _analisis(self):
+        return datos.analizar_precios_casas(
+            datos.parsear_precios_casas(self._payload()))
+
+    def test_parsear_tabla_larga(self):
+        tabla = datos.parsear_precios_casas(self._payload())
+        self.assertEqual(len(tabla), 8)
+        self.assertEqual(set(tabla["mercado"]), {"spreads", "totals"})
+        self.assertEqual(set(tabla["casa"]),
+                         {"DraftKings", "FanDuel", "BetMGM"})
+        # una casa sin totales se parsea igual (no rompe nada)
+        self.assertEqual(len(tabla[tabla["casa"] == "FanDuel"]), 2)
+        self.assertTrue(pd.api.types.is_numeric_dtype(tabla["cuota"]))
+        self.assertEqual(tabla["linea"].dropna().iloc[0], -3.0)
+
+    def test_parsear_sin_juegos(self):
+        tabla = datos.parsear_precios_casas([])
+        self.assertTrue(tabla.empty)
+        self.assertIn("cuota", tabla.columns)
+
+    def test_mejor_y_peor_precio(self):
+        mejores = self._analisis()["mejores"]
+        kc = mejores[(mejores["lado"] == "Kansas City Chiefs")
+                     & (mejores["mercado"] == "spreads")].iloc[0]
+        self.assertEqual(kc["mejor_cuota"], -105)
+        self.assertEqual(kc["casa_mejor"], "FanDuel")
+        self.assertEqual(kc["peor_cuota"], -112)
+        self.assertEqual(kc["casa_peor"], "BetMGM")
+        self.assertAlmostEqual(kc["pago_mejor"], 100 / 105, places=4)
+        self.assertAlmostEqual(kc["pago_peor"], 100 / 112, places=4)
+        buf = mejores[(mejores["lado"] == "Buffalo Bills")
+                      & (mejores["mercado"] == "spreads")].iloc[0]
+        self.assertEqual(buf["mejor_cuota"], -108)
+        self.assertEqual(buf["casa_mejor"], "BetMGM")
+
+    def test_vig_por_casa(self):
+        por_casa = self._analisis()["por_casa"].set_index("casa")
+        dfu = (105 / 205 + 115 / 215 - 1) * 100
+        self.assertAlmostEqual(por_casa.loc["FanDuel", "vig_medio"], dfu,
+                               places=2)
+        self.assertAlmostEqual(
+            por_casa.loc["DraftKings", "vig_medio"], (110 / 210) * 2 * 100 - 100,
+            places=2)
+        # DraftKings cubre spreads y totales (2 mercados)
+        self.assertEqual(por_casa.loc["DraftKings", "partidos"], 2)
+        # ordenada de la casa más barata a la más cara
+        self.assertEqual(list(por_casa.index),
+                         ["FanDuel", "BetMGM", "DraftKings"])
+
+    def test_vig_juego_y_mejor_precio(self):
+        analisis = self._analisis()
+        vj = analisis["vig_juego"].set_index("mercado")
+        v_mejor_spread = (105 / 205 + 108 / 208 - 1) * 100
+        self.assertAlmostEqual(vj.loc["spreads", "vig_mejor"], v_mejor_spread,
+                               places=2)
+        self.assertAlmostEqual(
+            vj.loc["spreads", "vig_medio"],
+            ((110 / 210) * 2 * 100 - 100 + (105 / 205 + 115 / 215 - 1) * 100
+             + (112 / 212 + 108 / 208 - 1) * 100) / 3,
+            places=2)
+        self.assertEqual(vj.loc["spreads", "n_casas"], 3)
+        # totales: solo DraftKings publica los dos lados
+        self.assertEqual(vj.loc["totals", "n_casas"], 1)
+        self.assertAlmostEqual(vj.loc["totals", "vig_mejor"],
+                               (110 / 210) * 2 * 100 - 100, places=2)
+        r = analisis["resumen"]
+        self.assertEqual(r["juegos"], 1)
+        self.assertEqual(r["casas"], 3)
+        self.assertLess(r["vig_mejor"], r["vig_medio"])  # comparar ayuda
+
+    def test_abreviatura_de(self):
+        equipos = pd.DataFrame({
+            "team_abbr": ["KC", "WAS", "LAR", "STL"],
+            "team_name": ["Kansas City Chiefs", "Washington Commanders",
+                          "Los Angeles Rams", "St. Louis Rams"],
+            "team_nick": ["Chiefs", "Commanders", "Rams", "Rams"],
+        })
+        self.assertEqual(
+            datos.abreviatura_de("Kansas City Chiefs", equipos), "KC")
+        # solo el apodo (nombre que no está exacto) también vale
+        self.assertEqual(datos.abreviatura_de("Commanders", equipos), "WAS")
+        self.assertIsNone(datos.abreviatura_de("Toronto Raptors", equipos))
+        self.assertIsNone(datos.abreviatura_de("Chiefs", None))
+
+    def test_analizar_sin_datos(self):
+        vacio = datos.analizar_precios_casas(pd.DataFrame())
+        self.assertEqual(vacio["resumen"]["juegos"], 0)
+        self.assertTrue(vacio["mejores"].empty)
+
+    def test_cargar_clave_invalida(self):
+        class Respuesta:
+            status_code = 401
+            headers = {}
+            text = ""
+
+        with mock.patch.object(datos.requests, "get", return_value=Respuesta()):
+            with self.assertRaises(ValueError) as caso:
+                datos.cargar_precios_casas("clave_mala")
+        self.assertIn("no es válida", str(caso.exception))
+
+    def test_cargar_ok_con_encabezados(self):
+        payload = self._payload()
+
+        class Respuesta:
+            status_code = 200
+            headers = {"x-requests-used": "2",
+                       "x-requests-remaining": "498",
+                       "x-requests-last": "2"}
+            text = ""
+
+            def json(self):
+                return payload
+
+        with mock.patch.object(datos.requests, "get",
+                               return_value=Respuesta()) as falso:
+            tabla, uso = datos.cargar_precios_casas("clave_de_prueba")
+
+        self.assertEqual(len(tabla), 8)
+        self.assertEqual(uso["restantes"], "498")
+        self.assertEqual(falso.call_args.kwargs["params"]["regions"], "us")
 
 
 class ModeloDePronosticos(unittest.TestCase):

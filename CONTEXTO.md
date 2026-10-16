@@ -32,9 +32,10 @@ el *vig*.** 🔞 Solo para +18.
 
 | Archivo | Qué es |
 |---|---|
-| `app.py` | La app de Streamlit (UI + gráficas), 6 pestañas / 22 gráficas |
-| `datos.py` | Descarga, preparación y **modelo de pronósticos** (SRS walk-forward) |
-| `tests/test_datos.py` | Pruebas básicas (29) de `datos.py` |
+| `app.py` | La app de Streamlit (UI + gráficas), 7 pestañas / 23 gráficas |
+| `datos.py` | Descarga, preparación, **modelo de pronósticos** (SRS walk-forward) y **precios entre casas** (The Odds API) |
+| `tests/test_datos.py` | Pruebas básicas (38) de `datos.py` |
+| `.streamlit/secrets.toml` | Clave de The Odds API (local, NO se sube; en `.gitignore`) |
 | `data/nfl_games.csv` | Caché de partidos y líneas (se baja sola; NO se sube) |
 | `data/equipos.csv` | Nombres y colores de equipos (NO se sube) |
 | `data/partidos.csv` | Respaldo de ejemplo si no hay internet (sí se sube) |
@@ -104,17 +105,32 @@ Se abre en `http://localhost:8501`. (No se corre en Thonny: es app web.)
    comentarios en español. (El usuario viene de ejercicios tipo `S12_01`.)
 9. **Verificación obligatoria antes de dar algo por bueno** (el usuario lo pide):
    - `python -m py_compile app.py datos.py`
-   - `.venv/bin/python -m unittest discover -s tests -t .` (29/29 en verde)
+   - `.venv/bin/python -m unittest discover -s tests -t .` (38/38 en verde)
    - **AppTest** de Streamlit sin excepciones:
      `AppTest.from_file("app.py", default_timeout=180).run()` (con
      `at.select_slider[0].set_value(...)` para probar umbrales).
+     ⚠️ Si existe `.streamlit/secrets.toml` (hoy **sí**, la clave del usuario),
+     AppTest y la pestaña 🛒 **consultan de verdad** The Odds API cuando la
+     caché de 15 min está fría (2–4 créditos por consulta): para verificar sin
+     gastar, mueve el archivo un momento o usa `mock`.
    - Cuando se toque UI: Lighthouse con accesibilidad ≥ 0.95 (hoy 1.00) y
      captura del cambio. Ojo: si el servidor llevaba abierto desde antes de
      tocar `datos.py`, reinícialo antes de verificar (ver «Cómo se corre»).
-10. **Tema visual:** oscuro, definido en `.streamlit/config.toml`; los detalles
+10. **Precios entre casas (The Odds API, pestaña 🛒):** funciones en `datos.py`
+    (`cargar_precios_casas`, `parsear_precios_casas`, `analizar_precios_casas`).
+    La clave se pega **en la propia pestaña** y se guarda en
+    `.streamlit/secrets.toml` (local, **en `.gitignore`: jamás subirla**) y en
+    `session_state`; `app.py` la busca con `clave_odds_api()`. La descarga va
+    **cacheada 15 min** (`st.cache_data(ttl=900)`) + botón de refresco manual:
+    cada descarga gasta **créditos** de la cuenta gratuita (1 región = 2
+    créditos; la cuota es 500/mes). Sin clave, la pestaña muestra instrucciones
+    y **NO descarga nada**. El análisis compara el **vig** de cada casa y cuánto
+    se paga por $100 con la mejor vs. la peor línea (comprar precio reduce el
+    vig pagado; **no crea edge**).
+11. **Tema visual:** oscuro, definido en `.streamlit/config.toml`; los detalles
     (CSS, chips, tablas) están en `app.py`. Las gráficas se muestran con
     `theme=None` para conservar el estilo propio (si no, Streamlit las repinta).
-11. **La pestaña de apuestas SÍ da picks, pero con transparencia total:**
+12. **La pestaña de apuestas SÍ da picks, pero con transparencia total:**
     - Aviso visible en la pestaña 🎯 y nota de juego responsable en el pie
       (EE. UU. **1-800-522-4700** · España **900 200 225**).
     - Se muestra el historial completo walk-forward (ROI, acierto, banca):
@@ -169,23 +185,32 @@ Tema: oscuro, tipo "noche de estadio". Lo fija `.streamlit/config.toml`.
 - ✅ Conexión a datos reales de nflverse (con caché local y respaldo sin internet).
 - ✅ **Modelo walk-forward** de spread y totales (SRS) sin fuga de futuro,
   con historial completo desde 2006 y picks de la jornada pendiente.
-- ✅ **6 pestañas / 22 gráficas**: 🎯 Picks del modelo · 📈 ATS por equipo ·
-  🎲 Totales y clima · 🧮 Números clave · 💰 Mercado y vig · 📊 Temporadas.
+- ✅ **7 pestañas / 23 gráficas**: 🎯 Picks del modelo · 📈 ATS por equipo ·
+  🎲 Totales y clima · 🧮 Números clave · 💰 Mercado y vig · 🛒 Precios entre
+  casas · 📊 Temporadas.
 - ✅ Vista **📊 Temporadas comparadas (2020–hoy)** en una sola vista: puntos por
   partido, % de overs, % de favoritos cubriendo y ROI a ciegas año a año
   (la prueba del vig temporada a temporada).
+- ✅ Pestaña **🛒 Precios entre casas (The Odds API)**: vig de cada casa y
+  pago por $100 con la mejor vs. la peor línea. Necesita **clave gratuita
+  propia** (se pega en la pestaña; sin clave solo muestra instrucciones).
+- ✅ La clave del usuario ya está guardada en `.streamlit/secrets.toml`
+  (16/10/2026) y la pestaña 🛒 queda **verificada en vivo**: consulta real con
+  9 casas de EE. UU., vig medio 4.5% → **2.6% con el mejor precio**, consola
+  del navegador sin errores y 0 excepciones.
 - ✅ Mapa de calor ATS equipo × semana, ATS por tamaño de línea, totales por
   equipo y efecto del viento/temperatura.
 - ✅ Botón **🔄 Actualizar líneas** con fecha de última descarga.
-- ✅ **29 tests** en `tests/test_datos.py` (cuotas/vig, spread, push, totales,
-  primetime 1999–2005, resumen por temporada, respaldo offline y **no fuga de
-  futuro** del modelo).
+- ✅ **38 tests** en `tests/test_datos.py` (cuotas/vig, spread, push, totales,
+  primetime 1999–2005, resumen por temporada, respaldo offline, **no fuga de
+  futuro** del modelo y **precios entre casas** con `mock`: parseo, mejores
+  precios por lado, vig por casa/juego y errores 401/otros).
 - ✅ Verificado con **AppTest** (0 excepciones, incluidos cambios de umbral) y
   **Lighthouse con accesibilidad 1.00**; consola del navegador sin errores.
 - ✅ README reescrito (enfoque apuestas + pasos de publicación) y CONTEXTO al día.
-- ✅ Subido a GitHub (2 commits). Publicación en **Streamlit Cloud pendiente
-  solo del inicio de sesión** en share.streamlit.io (el código de verificación
-  de GitHub no llegaba; se reintenta cuando quiera el usuario).
+- ✅ Subido a GitHub. La publicación en **Streamlit Cloud queda EN PAUSA por
+  decisión del usuario** (16/10/2026): el código y los pasos del README están
+  listos para cuando quiera retomarla.
 
 **Hallazgos honestos que la app muestra:** favoritos cubren ~48.7% y overs
 ~49.5% (el mercado es casi perfecto); *vig* del moneyline ~2.75%; apostar a
@@ -196,17 +221,29 @@ vs ~35% en la temporada completa: buena lección de muestras pequeñas.
 
 ## Backlog (pendiente) — ideas para seguir optimizando
 
+- [ ] **NUEVO FOCO (pedido del usuario, 16/10/2026) — LA MISIÓN actual:**
+      (1) **picks ampliados**: moneyline (ML) y **props de jugadores**
+      (anytime TD, yardas por tierra, pases de TD, yardas de pase del QB,
+      recepciones/yardas de recepción…); (2) pestaña nueva de **registro y
+      auditoría de picks**: todos los picks con **¿pegó? Sí/No/Push/Pendiente**,
+      marcador y **% de aciertos** de la semana en curso, la temporada y todo
+      el histórico, por mercado. Detalle en `PROMPT_NUEVO_CHAT.md`
+      (sección «LA MISIÓN»). Ojo: las líneas de props seguramente NO están en
+      el plan gratis de The Odds API (verificar en 2026); sin línea real, un
+      prop se marca como **proyección**, nunca como apuesta con valor.
 - [ ] Publicar gratis en **Streamlit Community Cloud** (link compartible).
-      Repo ya subido; falta solo el login en share.streamlit.io.
-      Pasos ya escritos en `README.md` (sección "Publicar gratis").
-- [ ] **Comparar líneas de apertura vs. cierre** (necesita otra fuente, p. ej.
-      otra release de nflverse).
-- [ ] **Comparar precios entre casas** (el mejor precio mejora el ROI; otra fuente).
+      **EN PAUSA por decisión del usuario** (16/10/2026). Repo ya subido;
+      pasos en `README.md` (sección "Publicar gratis").
+- [ ] **Comparar líneas de apertura vs. cierre** (necesita otra fuente
+      histórica multi-casa; candidata: dataset `flancast90/sportsbookreview-scraper`
+      con open/close 2011–2021, una sola casa).
+- [x] **Comparar precios entre casas** → pestaña 🛒 con The Odds API (gratis,
+      500 créditos/mes; el mejor precio reduce el vig pagado).
 - [x] **Comparar varias temporadas** en una sola vista (2020–2026)
       → pestaña 📊 Temporadas (2020–hoy).
 - [ ] Gráficas de **rachas** y **diferencia de puntos** por equipo.
 - [x] Mejorar el diseño/colores y hacerlo responsive.
-- [x] Añadir pruebas (tests) básicas → 29 tests, incluido "sin fuga de futuro".
+- [x] Añadir pruebas (tests) básicas → 38 tests, incluido "sin fuga de futuro".
 - [x] Verificar que `primetime` capture bien todos los casos.
       (Único pendiente: los jueves de 1999, que en la fuente no traen hora.)
 - [x] Mapa de calor de aciertos por equipo/semana.

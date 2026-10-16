@@ -11,7 +11,7 @@ sin maquillar.
 > datos). 🔞 Solo para +18. Juega responsablemente y nunca apuestes dinero que
 > no puedas permitirte perder.
 
-## Las 6 pestañas (22 gráficas)
+## Las 7 pestañas (23 gráficas)
 
 1. **🎯 Picks del modelo** — pronósticos de la jornada pendiente (solo donde la
    línea ya está publicada) + historial *walk-forward* desde 2006: ROI, % de
@@ -27,7 +27,12 @@ sin maquillar.
 5. **💰 Mercado y vig** — ventaja de la casa (moneyline y spread), calibración
    del precio y la **banca a ciegas**: apostar siempre lo mismo pierde,
    temporada tras temporada.
-6. **📊 Temporadas** — la liga entera temporada a temporada (2020–hoy): puntos
+6. **🛒 Precios entre casas** — cuotas **reales de la próxima jornada** en
+   varias casas (The Odds API, plan gratuito) para comparar la comisión
+   (*vig*) de cada una: quién paga mejor cada lado y cuánto cambia la misma
+   apuesta de una casa a otra. Requiere una **clave gratuita** (2 minutos);
+   sin ella, la pestaña solo muestra las instrucciones.
+7. **📊 Temporadas** — la liga entera temporada a temporada (2020–hoy): puntos
    por partido, % de overs, % de favoritos cubriendo y ROI a ciegas año a año,
    para comprobar si las «tendencias» se repiten (casi nunca) y comparar la
    temporada en curso con las anteriores.
@@ -70,14 +75,15 @@ pip install -r requirements.txt
 ```
 
 Cubren cuotas/vig, la convención del spread, *push*, totales, primetime
-(incluidas las correcciones de 1999–2005), el respaldo sin internet y que el
-modelo **no vea el futuro**.
+(incluidas las correcciones de 1999–2005), el resumen por temporada, los
+precios entre casas (con datos de laboratorio), el respaldo sin internet y
+que el modelo **no vea el futuro**.
 
 ## Archivos
 
 | Archivo | Qué es |
 |---|---|
-| `app.py` | La app de Streamlit (6 pestañas) |
+| `app.py` | La app de Streamlit (7 pestañas) |
 | `datos.py` | Descarga, preparación y modelo de pronósticos |
 | `tests/test_datos.py` | Pruebas básicas |
 | `data/nfl_games.csv` | Caché de partidos y líneas (se baja sola; NO se sube) |
@@ -107,11 +113,15 @@ modelo **no vea el futuro**.
   viejos de nflverse (2000–2005 y 1999). Thanksgiving de día NO cuenta.
 - El botón **🔄 Actualizar líneas** vuelve a bajar el CSV (las líneas se mueven
   durante la semana; la app muestra cuándo se descargaron por última vez).
+- **Precios entre casas** (pestaña 🛒) usa **The Odds API** con una clave
+  gratuita que se guarda en `.streamlit/secrets.toml` (ese archivo NO se sube
+  a GitHub); la app explica cómo conseguirla en 2 minutos.
 
 ## Próximos pasos
 
-- [ ] Comparar **líneas de apertura vs. cierre** y **precios entre casas**
-      (necesita otra fuente de datos).
+- [ ] Comparar **líneas de apertura vs. cierre** (necesita otra fuente).
+- [x] Comparar **precios entre casas** (pestaña 🛒 con The Odds API; clave
+      gratuita opcional).
 - [x] Comparar varias temporadas en una sola vista (pestaña 📊).
 - [ ] Rachas y diferencia de puntos por equipo.
 - [x] Mapa de calor ATS por equipo y semana.
