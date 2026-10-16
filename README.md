@@ -11,7 +11,7 @@ sin maquillar.
 > datos). 🔞 Solo para +18. Juega responsablemente y nunca apuestes dinero que
 > no puedas permitirte perder.
 
-## Las 5 pestañas (18 gráficas)
+## Las 6 pestañas (22 gráficas)
 
 1. **🎯 Picks del modelo** — pronósticos de la jornada pendiente (solo donde la
    línea ya está publicada) + historial *walk-forward* desde 2006: ROI, % de
@@ -27,6 +27,10 @@ sin maquillar.
 5. **💰 Mercado y vig** — ventaja de la casa (moneyline y spread), calibración
    del precio y la **banca a ciegas**: apostar siempre lo mismo pierde,
    temporada tras temporada.
+6. **📊 Temporadas** — la liga entera temporada a temporada (2020–hoy): puntos
+   por partido, % de overs, % de favoritos cubriendo y ROI a ciegas año a año,
+   para comprobar si las «tendencias» se repiten (casi nunca) y comparar la
+   temporada en curso con las anteriores.
 
 ## El modelo (sin trampas)
 
@@ -73,7 +77,7 @@ modelo **no vea el futuro**.
 
 | Archivo | Qué es |
 |---|---|
-| `app.py` | La app de Streamlit (5 pestañas) |
+| `app.py` | La app de Streamlit (6 pestañas) |
 | `datos.py` | Descarga, preparación y modelo de pronósticos |
 | `tests/test_datos.py` | Pruebas básicas |
 | `data/nfl_games.csv` | Caché de partidos y líneas (se baja sola; NO se sube) |
@@ -108,7 +112,7 @@ modelo **no vea el futuro**.
 
 - [ ] Comparar **líneas de apertura vs. cierre** y **precios entre casas**
       (necesita otra fuente de datos).
-- [ ] Comparar varias temporadas en una sola vista.
+- [x] Comparar varias temporadas en una sola vista (pestaña 📊).
 - [ ] Rachas y diferencia de puntos por equipo.
 - [x] Mapa de calor ATS por equipo y semana.
 - [x] Pruebas básicas de `datos.py`.

@@ -32,9 +32,9 @@ el *vig*.** 🔞 Solo para +18.
 
 | Archivo | Qué es |
 |---|---|
-| `app.py` | La app de Streamlit (UI + gráficas), 5 pestañas / 18 gráficas |
+| `app.py` | La app de Streamlit (UI + gráficas), 6 pestañas / 22 gráficas |
 | `datos.py` | Descarga, preparación y **modelo de pronósticos** (SRS walk-forward) |
-| `tests/test_datos.py` | Pruebas básicas (25) de `datos.py` |
+| `tests/test_datos.py` | Pruebas básicas (29) de `datos.py` |
 | `data/nfl_games.csv` | Caché de partidos y líneas (se baja sola; NO se sube) |
 | `data/equipos.csv` | Nombres y colores de equipos (NO se sube) |
 | `data/partidos.csv` | Respaldo de ejemplo si no hay internet (sí se sube) |
@@ -53,6 +53,11 @@ streamlit run app.py
 ```
 
 Se abre en `http://localhost:8501`. (No se corre en Thonny: es app web.)
+
+> ⚠️ **Si editas `datos.py`, reinicia el servidor.** Streamlit recarga `app.py`
+> solo, pero el módulo `datos` se queda viejo en memoria y el botón/la página
+> dan `AttributeError: module 'datos' has no attribute ...`. Parar con `Ctrl+C`
+> y volver a lanzar `streamlit run app.py`.
 
 ## Decisiones técnicas IMPORTANTES (no las rompas sin razón)
 
@@ -99,11 +104,13 @@ Se abre en `http://localhost:8501`. (No se corre en Thonny: es app web.)
    comentarios en español. (El usuario viene de ejercicios tipo `S12_01`.)
 9. **Verificación obligatoria antes de dar algo por bueno** (el usuario lo pide):
    - `python -m py_compile app.py datos.py`
-   - `.venv/bin/python -m unittest discover -s tests -t .` (25/25 en verde)
+   - `.venv/bin/python -m unittest discover -s tests -t .` (29/29 en verde)
    - **AppTest** de Streamlit sin excepciones:
      `AppTest.from_file("app.py", default_timeout=180).run()` (con
      `at.select_slider[0].set_value(...)` para probar umbrales).
-   - Cuando se toque UI: Lighthouse con accesibilidad ≥ 0.95 (hoy 1.00).
+   - Cuando se toque UI: Lighthouse con accesibilidad ≥ 0.95 (hoy 1.00) y
+     captura del cambio. Ojo: si el servidor llevaba abierto desde antes de
+     tocar `datos.py`, reinícialo antes de verificar (ver «Cómo se corre»).
 10. **Tema visual:** oscuro, definido en `.streamlit/config.toml`; los detalles
     (CSS, chips, tablas) están en `app.py`. Las gráficas se muestran con
     `theme=None` para conservar el estilo propio (si no, Streamlit las repinta).
@@ -162,17 +169,23 @@ Tema: oscuro, tipo "noche de estadio". Lo fija `.streamlit/config.toml`.
 - ✅ Conexión a datos reales de nflverse (con caché local y respaldo sin internet).
 - ✅ **Modelo walk-forward** de spread y totales (SRS) sin fuga de futuro,
   con historial completo desde 2006 y picks de la jornada pendiente.
-- ✅ **5 pestañas / 18 gráficas**: 🎯 Picks del modelo · 📈 ATS por equipo ·
-  🎲 Totales y clima · 🧮 Números clave · 💰 Mercado y vig.
+- ✅ **6 pestañas / 22 gráficas**: 🎯 Picks del modelo · 📈 ATS por equipo ·
+  🎲 Totales y clima · 🧮 Números clave · 💰 Mercado y vig · 📊 Temporadas.
+- ✅ Vista **📊 Temporadas comparadas (2020–hoy)** en una sola vista: puntos por
+  partido, % de overs, % de favoritos cubriendo y ROI a ciegas año a año
+  (la prueba del vig temporada a temporada).
 - ✅ Mapa de calor ATS equipo × semana, ATS por tamaño de línea, totales por
   equipo y efecto del viento/temperatura.
 - ✅ Botón **🔄 Actualizar líneas** con fecha de última descarga.
-- ✅ **25 tests** en `tests/test_datos.py` (cuotas/vig, spread, push, totales,
-  primetime 1999–2005, respaldo offline y **no fuga de futuro** del modelo).
+- ✅ **29 tests** en `tests/test_datos.py` (cuotas/vig, spread, push, totales,
+  primetime 1999–2005, resumen por temporada, respaldo offline y **no fuga de
+  futuro** del modelo).
 - ✅ Verificado con **AppTest** (0 excepciones, incluidos cambios de umbral) y
   **Lighthouse con accesibilidad 1.00**; consola del navegador sin errores.
 - ✅ README reescrito (enfoque apuestas + pasos de publicación) y CONTEXTO al día.
-- ✅ Subido a GitHub.
+- ✅ Subido a GitHub (2 commits). Publicación en **Streamlit Cloud pendiente
+  solo del inicio de sesión** en share.streamlit.io (el código de verificación
+  de GitHub no llegaba; se reintenta cuando quiera el usuario).
 
 **Hallazgos honestos que la app muestra:** favoritos cubren ~48.7% y overs
 ~49.5% (el mercado es casi perfecto); *vig* del moneyline ~2.75%; apostar a
@@ -184,14 +197,16 @@ vs ~35% en la temporada completa: buena lección de muestras pequeñas.
 ## Backlog (pendiente) — ideas para seguir optimizando
 
 - [ ] Publicar gratis en **Streamlit Community Cloud** (link compartible).
+      Repo ya subido; falta solo el login en share.streamlit.io.
       Pasos ya escritos en `README.md` (sección "Publicar gratis").
 - [ ] **Comparar líneas de apertura vs. cierre** (necesita otra fuente, p. ej.
       otra release de nflverse).
 - [ ] **Comparar precios entre casas** (el mejor precio mejora el ROI; otra fuente).
-- [ ] **Comparar varias temporadas** en una sola vista (2020–2026).
+- [x] **Comparar varias temporadas** en una sola vista (2020–2026)
+      → pestaña 📊 Temporadas (2020–hoy).
 - [ ] Gráficas de **rachas** y **diferencia de puntos** por equipo.
 - [x] Mejorar el diseño/colores y hacerlo responsive.
-- [x] Añadir pruebas (tests) básicas → 25 tests, incluido "sin fuga de futuro".
+- [x] Añadir pruebas (tests) básicas → 29 tests, incluido "sin fuga de futuro".
 - [x] Verificar que `primetime` capture bien todos los casos.
       (Único pendiente: los jueves de 1999, que en la fuente no traen hora.)
 - [x] Mapa de calor de aciertos por equipo/semana.
@@ -207,5 +222,8 @@ vs ~35% en la temporada completa: buena lección de muestras pequeñas.
   juego responsable y cero promesas. Si un cambio "vende humo", no va.
 - Tras cambios: **verifica** (py_compile + tests + AppTest + Lighthouse si toca
   UI) y recuérdale **commitear** con GitHub Desktop.
+- **Al terminar cada bloque de trabajo, actualiza `PROMPT_NUEVO_CHAT.md**
+  (regla del usuario: «siempre haz otro prompt para otro chat»): que refleje
+  el estado real y los pendientes del momento.
 - Para datos nuevos o dudas de la fuente, inspecciona `data/nfl_games.csv` real
   antes de asumir formatos; nflverse cambia detalles entre temporadas.

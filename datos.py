@@ -275,6 +275,59 @@ def con_nombre(valor: str, nombres: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# RESUMEN POR TEMPORADA (vista comparada)
+# ---------------------------------------------------------------------------
+def _pago_por_dolar(cuotas: pd.Series) -> pd.Series:
+    """Cuota americana (-110, +145...) → ganancia por $1 (sin devolver el $).
+
+    Sin cuota real (vacíos o datos viejos) se asume la estándar -110,
+    igual que en el resto de la app.
+    """
+    c = pd.to_numeric(cuotas, errors="coerce")
+    pago = (c / 100).where(c > 0, 100 / -c)
+    return pago.where(np.isfinite(pago), 100 / 110)
+
+
+def resumen_por_temporada(partidos: pd.DataFrame, desde: int = 2020) -> pd.DataFrame:
+    """Una fila por temporada (desde `desde`) con las métricas de liga.
+
+    Pensado para la pestaña de comparación: partidos, puntos por partido,
+    % de overs, % de favoritos cubriendo y ROI a ciegas de favoritos y
+    underdogs ($1 por apuesta, sin contar push). Cada lado se paga con SU
+    cuota (si el favorito gana cobra la suya; el underdog, la suya).
+    """
+    d = partidos[partidos["season"] >= desde].copy()
+    if d.empty:
+        return pd.DataFrame(columns=[
+            "temporada", "partidos", "puntos_por_partido",
+            "pct_overs", "pct_favoritos", "roi_favoritos", "roi_underdogs",
+        ])
+
+    con_spread = d[d["cubre_favorito"].notna()].copy()
+    cuota_fav = con_spread["home_spread_odds"].where(
+        con_spread["favorito_local"], con_spread["away_spread_odds"]
+    )
+    cuota_dog = con_spread["away_spread_odds"].where(
+        con_spread["favorito_local"], con_spread["home_spread_odds"]
+    )
+    gano_fav = con_spread["cubre_favorito"].astype(bool)
+    con_spread["gan_fav"] = _pago_por_dolar(cuota_fav).where(gano_fav, -1.0)
+    con_spread["gan_dog"] = _pago_por_dolar(cuota_dog).where(~gano_fav, -1.0)
+
+    con_total = d[d["over"].notna()]
+
+    resumen = pd.DataFrame({
+        "partidos": d.groupby("season").size(),
+        "puntos_por_partido": d.groupby("season")["total_puntos"].mean(),
+        "pct_overs": con_total.groupby("season")["over"].mean() * 100,
+        "pct_favoritos": con_spread.groupby("season")["cubre_favorito"].mean() * 100,
+        "roi_favoritos": con_spread.groupby("season")["gan_fav"].mean() * 100,
+        "roi_underdogs": con_spread.groupby("season")["gan_dog"].mean() * 100,
+    }).rename_axis("temporada").reset_index()
+    return resumen
+
+
+# ---------------------------------------------------------------------------
 # MODELO DE PRONÓSTICOS — walk-forward (sin ver el futuro)
 # ---------------------------------------------------------------------------
 # Cómo funciona (estilo "SRS", el sistema clásico de ratings por puntos):

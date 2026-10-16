@@ -5,8 +5,9 @@ Cómo correrlas (desde la carpeta del proyecto):
     .venv/bin/python -m unittest discover -s tests -t .
 
 Cubren: cuotas y vig, convención del spread, push, totales, primetime
-(incluidas las correcciones de 1999–2005), el respaldo sin conexión y el
-modelo de pronósticos (que NO use información del futuro: walk-forward).
+(incluidas las correcciones de 1999–2005), el resumen por temporada, el
+respaldo sin conexión y el modelo de pronósticos (que NO use información
+del futuro: walk-forward).
 """
 
 import itertools
@@ -187,6 +188,63 @@ class RespaldoSinInternet(unittest.TestCase):
         self.assertTrue(columnas.issubset(set(calendario.columns)))
         self.assertTrue((calendario["season"] == 0).all())
         self.assertEqual(len(jugados), int(calendario["jugado"].sum()))
+
+
+class ResumenPorTemporada(unittest.TestCase):
+    """La vista comparada: una fila por temporada con ROI, overs y ATS."""
+
+    def _calendario(self):
+        return preparar(
+            # 2024 · favorito local cubre; total clavado (push, no cuenta)
+            {"season": 2024, "home_score": 24.0, "away_score": 20.0,
+             "spread_line": 3.0, "total_line": 44.0},
+            # 2024 · el favorito falla; el underdog gana a cuota +115
+            {"season": 2024, "week": 2, "home_score": 22.0, "away_score": 20.0,
+             "spread_line": 3.0, "total_line": 40.0,
+             "home_spread_odds": -105.0, "away_spread_odds": 115.0},
+            # 2024 · favorito visitante (línea -6) cubre; cuota -125
+            {"season": 2024, "week": 3, "home_score": 17.0, "away_score": 27.0,
+             "spread_line": -6.0, "total_line": 43.5,
+             "home_spread_odds": 105.0, "away_spread_odds": -125.0},
+            # 2024 · push contra la línea (no cuenta en ATS); under
+            {"season": 2024, "week": 4, "home_score": 23.0, "away_score": 20.0,
+             "spread_line": 3.0, "total_line": 45.0},
+            # 2025 · sin cuotas → se asume la estándar -110
+            {"season": 2025, "home_score": 30.0, "away_score": 10.0,
+             "spread_line": 7.0, "total_line": 38.0,
+             "home_spread_odds": float("nan"), "away_spread_odds": float("nan")},
+        )
+
+    def test_metricas_de_2024(self):
+        r = datos.resumen_por_temporada(self._calendario()).set_index("temporada")
+        fila = r.loc[2024]
+        self.assertEqual(int(fila["partidos"]), 4)
+        self.assertAlmostEqual(fila["puntos_por_partido"], 43.25, places=2)
+        # overs: 2 de 3 (el push del total no cuenta)
+        self.assertAlmostEqual(fila["pct_overs"], 200 / 3, places=1)
+        # favoritos: cubrió, falló, cubrió (el push no cuenta) → 2 de 3
+        self.assertAlmostEqual(fila["pct_favoritos"], 200 / 3, places=1)
+        # ROI favoritos: +100/110, −1 y +100/125 → media de 3 apuestas
+        esperado_fav = (100 / 110 - 1 + 100 / 125) / 3 * 100
+        self.assertAlmostEqual(fila["roi_favoritos"], esperado_fav, places=2)
+        # ROI underdogs: −1, +115/100 y −1 (cada lado cobra SU cuota)
+        esperado_dog = (-1 + 115 / 100 - 1) / 3 * 100
+        self.assertAlmostEqual(fila["roi_underdogs"], esperado_dog, places=2)
+
+    def test_2025_sin_cuota_usa_menos_110(self):
+        r = datos.resumen_por_temporada(self._calendario()).set_index("temporada")
+        fila = r.loc[2025]
+        self.assertAlmostEqual(fila["roi_favoritos"], 100 / 110 * 100, places=2)
+        self.assertAlmostEqual(fila["roi_underdogs"], -100.0, places=2)
+
+    def test_filtro_desde(self):
+        r = datos.resumen_por_temporada(self._calendario(), desde=2025)
+        self.assertEqual(list(r["temporada"]), [2025])
+
+    def test_sin_datos_devuelve_tabla_vacia(self):
+        r = datos.resumen_por_temporada(self._calendario(), desde=2030)
+        self.assertTrue(r.empty)
+        self.assertIn("temporada", r.columns)
 
 
 class ModeloDePronosticos(unittest.TestCase):

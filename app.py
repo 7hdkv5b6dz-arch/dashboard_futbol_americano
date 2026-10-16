@@ -454,12 +454,13 @@ c4.metric(
          "en los partidos filtrados. Negativo = la casa gana, como esperarías.",
 )
 
-tab_picks, tab_ats, tab_totales, tab_clave, tab_mercado = st.tabs([
+tab_picks, tab_ats, tab_totales, tab_clave, tab_mercado, tab_temporadas = st.tabs([
     "🎯 Picks del modelo",
     "📈 ATS por equipo",
     "🎲 Totales y clima",
     "🧮 Números clave",
     "💰 Mercado y vig",
+    "📊 Temporadas",
 ])
 
 # Días de la semana en español (para las tablas de partidos)
@@ -1469,6 +1470,192 @@ Si el EV es negativo, por muchas rachas que tengas, a largo plazo pierdes.
 > no para "vencerlo". El historial está ahí para que lo juzgues tú.
             """
         )
+
+
+# ===========================================================================
+# TAB 6 — TEMPORADAS COMPARADAS
+# ===========================================================================
+with tab_temporadas:
+    st.header("📊 Temporadas comparadas (2020–hoy)")
+
+    st.caption(
+        "Esta vista compara **temporadas completas de toda la liga** en "
+        "paralelo (ignora los filtros de la barra lateral a propósito). "
+        "Sirve para la pregunta clave: ¿las «tendencias» de una temporada se "
+        "repiten en la siguiente? Apuestas de $1; los push no cuentan."
+    )
+
+    resumen_temp = datos.resumen_por_temporada(partidos, desde=2020)
+
+    if len(resumen_temp):
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric(
+            "Temporadas comparadas", len(resumen_temp), border=True,
+            help="Temporadas 2020 en adelante con partidos jugados "
+                 "(la última suele ir a medias).",
+        )
+        r2.metric(
+            "ROI medio · favoritos",
+            f"{resumen_temp['roi_favoritos'].mean():+.1f}%",
+            border=True,
+            help="Media del ROI a ciegas al favorito contra la línea, $1 por "
+                 "apuesta: cuánto se gana (?) o pierde año a año.",
+        )
+        r3.metric(
+            "ROI medio · underdogs",
+            f"{resumen_temp['roi_underdogs'].mean():+.1f}%",
+            border=True,
+            help="Lo mismo apostando siempre al underdog. También debería "
+                 "quedar en negativo: la casa cobra el vig igual.",
+        )
+        r4.metric(
+            "% overs medio",
+            f"{resumen_temp['pct_overs'].mean():.1f}%",
+            border=True,
+            help="Media del % de partidos que superaron la línea del total. "
+                 "Si el mercado fuera perfecto: 50%.",
+        )
+
+        # 1) Puntos por partido
+        fig = px.bar(
+            resumen_temp, x="temporada", y="puntos_por_partido",
+            custom_data=["partidos"], text="puntos_por_partido",
+            title="Puntos por partido, temporada a temporada",
+            labels={"temporada": "Temporada",
+                    "puntos_por_partido": "Puntos por partido"},
+        )
+        fig.update_traces(
+            marker_color="#00C46A", texttemplate="%{text:.1f}",
+            textposition="outside",
+            hovertemplate="Temporada %{x}: %{y:.1f} puntos por partido"
+                          "<br>Partidos: %{customdata[0]}<extra></extra>",
+        )
+        fig.add_hline(
+            y=resumen_temp["puntos_por_partido"].mean(),
+            line_dash="dash", line_color="rgba(255,255,255,.4)",
+        )
+        fig.update_xaxes(dtick=1)
+        mostrar_grafica(fig)
+        st.caption(
+            "Cuánto se marca de media cada temporada (línea punteada: media "
+            "del periodo). Sube y baja sin patrón fijo: ninguna cifra es "
+            "«la normal» para siempre."
+        )
+
+        # 2) % de overs por temporada
+        fig = px.bar(
+            resumen_temp, x="temporada", y="pct_overs",
+            custom_data=["partidos"], text="pct_overs",
+            title="% de partidos que superaron la línea del total",
+            labels={"temporada": "Temporada", "pct_overs": "% overs"},
+        )
+        fig.update_traces(
+            marker_color="#4C9AFF", texttemplate="%{text:.0f}%",
+            textposition="outside",
+            hovertemplate="Temporada %{x}: %{y:.1f}% overs"
+                          "<br>Partidos: %{customdata[0]}<extra></extra>",
+        )
+        fig.add_hline(y=50, line_dash="dash", line_color="rgba(255,255,255,.4)")
+        fig.update_xaxes(dtick=1)
+        mostrar_grafica(fig)
+        st.caption(
+            "La línea se pone para rondar el 50%. Una temporada de 56% o 44% "
+            "casi siempre es azar, no una ley: mira cuántos partidos son antes "
+            "de creerte una tendencia."
+        )
+
+        # 3) % de favoritos cubriendo por temporada
+        fig = px.bar(
+            resumen_temp, x="temporada", y="pct_favoritos",
+            custom_data=["partidos"], text="pct_favoritos",
+            title="% de favoritos que cubrieron la línea (ATS)",
+            labels={"temporada": "Temporada", "pct_favoritos": "% que cubrió"},
+        )
+        fig.update_traces(
+            marker_color="#F2C14E", texttemplate="%{text:.0f}%",
+            textposition="outside",
+            hovertemplate="Temporada %{x}: %{y:.1f}% de favoritos cubrieron"
+                          "<br>Partidos: %{customdata[0]}<extra></extra>",
+        )
+        fig.add_hline(y=50, line_dash="dash", line_color="rgba(255,255,255,.4)")
+        fig.update_xaxes(dtick=1)
+        mostrar_grafica(fig)
+        st.caption(
+            "Ni los favoritos ni los underdogs tienen una temporada «buena» "
+            "fija: el % se pasea alrededor del 50% porque la línea se ajusta "
+            "para eso."
+        )
+
+        # 4) ROI a ciegas por temporada (la prueba del vig, año a año)
+        roi_temp = resumen_temp.melt(
+            id_vars=["temporada", "partidos"],
+            value_vars=["roi_favoritos", "roi_underdogs"],
+            var_name="estrategia", value_name="roi",
+        )
+        roi_temp["estrategia"] = roi_temp["estrategia"].map({
+            "roi_favoritos": "Favoritos ATS",
+            "roi_underdogs": "Underdogs ATS",
+        })
+        fig = px.bar(
+            roi_temp, x="temporada", y="roi", color="estrategia",
+            barmode="group", custom_data=["partidos"], text="roi",
+            color_discrete_map={"Favoritos ATS": "#4C9AFF",
+                                "Underdogs ATS": "#F2C14E"},
+            title="ROI a ciegas por temporada: apostar $1 en cada partido",
+            labels={"temporada": "Temporada", "roi": "ROI (%)", "estrategia": ""},
+        )
+        fig.update_traces(
+            texttemplate="%{text:+.1f}%", textposition="outside",
+            hovertemplate="Temporada %{x} · %{fullData.name}: %{y:+.1f}%"
+                          "<br>Partidos: %{customdata[0]}<extra></extra>",
+        )
+        fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,.35)")
+        fig.update_xaxes(dtick=1)
+        mostrar_grafica(fig)
+        st.caption(
+            "La prueba año a año de que apostar a ciegas no es un plan: el ROI "
+            "queda bajo cero en casi todas las temporadas, y lo que gana una "
+            "lo devuelve la siguiente. Eso no es mala suerte: es la casa "
+            "cobrando su margen."
+        )
+
+        # Tabla resumen
+        st.subheader("📋 El resumen, en tabla")
+        st.dataframe(
+            resumen_temp.rename(columns={
+                "temporada": "Temporada", "partidos": "Partidos",
+                "puntos_por_partido": "Puntos/partido",
+                "pct_overs": "% overs", "pct_favoritos": "% favoritos ATS",
+                "roi_favoritos": "ROI favoritos ($1)",
+                "roi_underdogs": "ROI underdogs ($1)",
+            }),
+            width="stretch", hide_index=True,
+            height=min(430, 40 + 36 * len(resumen_temp)),
+            column_config={
+                "Temporada": st.column_config.NumberColumn(format="%d"),
+                "Partidos": st.column_config.NumberColumn(format="%d"),
+                "Puntos/partido": st.column_config.NumberColumn(
+                    format="%.1f", help="Media de puntos sumados por partido."),
+                "% overs": st.column_config.NumberColumn(
+                    format="%.1f",
+                    help="% de partidos que superaron la línea (sin push)."),
+                "% favoritos ATS": st.column_config.NumberColumn(
+                    format="%.1f",
+                    help="% de partidos en que cubrió el favorito (sin push)."),
+                "ROI favoritos ($1)": st.column_config.NumberColumn(
+                    format="%+.1f",
+                    help="Ganancia media por $1 apostado al favorito (%)."),
+                "ROI underdogs ($1)": st.column_config.NumberColumn(
+                    format="%+.1f",
+                    help="Ganancia media por $1 apostado al underdog (%)."),
+            },
+        )
+        st.caption(
+            "La última temporada suele estar **a medias**: mira la columna de "
+            "partidos antes de sacar conclusiones."
+        )
+    else:
+        st.info("No hay temporadas de 2020 en adelante en los datos actuales.")
 
 
 st.divider()
