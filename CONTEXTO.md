@@ -32,7 +32,7 @@ el *vig*.** 🔞 Solo para +18.
 
 | Archivo | Qué es |
 |---|---|
-| `app.py` | La app de Streamlit (UI + gráficas), 7 pestañas / 23 gráficas |
+| `app.py` | La app de Streamlit (UI + gráficas), 8 pestañas / 23 gráficas |
 | `datos.py` | Descarga, preparación, **modelo de pronósticos** (SRS walk-forward) y **precios entre casas** (The Odds API) |
 | `tests/test_datos.py` | Pruebas básicas (38) de `datos.py` |
 | `.streamlit/secrets.toml` | Clave de The Odds API (local, NO se sube; en `.gitignore`) |
@@ -185,9 +185,17 @@ Tema: oscuro, tipo "noche de estadio". Lo fija `.streamlit/config.toml`.
 - ✅ Conexión a datos reales de nflverse (con caché local y respaldo sin internet).
 - ✅ **Modelo walk-forward** de spread y totales (SRS) sin fuga de futuro,
   con historial completo desde 2006 y picks de la jornada pendiente.
-- ✅ **7 pestañas / 23 gráficas**: 🎯 Picks del modelo · 📈 ATS por equipo ·
-  🎲 Totales y clima · 🧮 Números clave · 💰 Mercado y vig · 🛒 Precios entre
-  casas · 📊 Temporadas.
+- ✅ **ML + registro (16/10/2026)**: picks de **moneyline** (probabilidad del
+  modelo desde el margen con sigma walk-forward ≈ 13.5; edge vs. probabilidad
+  sin *vig* del mercado) y pestaña **📋 Registro de picks**: estado de cada
+  pick (✅ Pegó / ❌ No pegó / ➖ Push / ⏳ Pendiente), marcador de la jornada,
+  **% de acierto y ROI por mercado**, acumulado de la temporada 2026 y del
+  histórico desde 2006, con filtros por temporada, equipo y mercado. Resultado
+  honesto inicial: **ML 42.3 % de acierto y ROI −5.2 %** (3 861 picks desde
+  2006) — el modelo tampoco le gana al mercado.
+- ✅ **8 pestañas / 23 gráficas**: 🎯 Picks del modelo · 📋 Registro de picks ·
+  📈 ATS por equipo · 🎲 Totales y clima · 🧮 Números clave · 💰 Mercado y vig ·
+  🛒 Precios entre casas · 📊 Temporadas.
 - ✅ Vista **📊 Temporadas comparadas (2020–hoy)** en una sola vista: puntos por
   partido, % de overs, % de favoritos cubriendo y ROI a ciegas año a año
   (la prueba del vig temporada a temporada).
@@ -201,12 +209,16 @@ Tema: oscuro, tipo "noche de estadio". Lo fija `.streamlit/config.toml`.
 - ✅ Mapa de calor ATS equipo × semana, ATS por tamaño de línea, totales por
   equipo y efecto del viento/temperatura.
 - ✅ Botón **🔄 Actualizar líneas** con fecha de última descarga.
-- ✅ **38 tests** en `tests/test_datos.py` (cuotas/vig, spread, push, totales,
+- ✅ **49 tests** en `tests/test_datos.py` (cuotas/vig, spread, push, totales,
   primetime 1999–2005, resumen por temporada, respaldo offline, **no fuga de
-  futuro** del modelo y **precios entre casas** con `mock`: parseo, mejores
-  precios por lado, vig por casa/juego y errores 401/otros).
-- ✅ Verificado con **AppTest** (0 excepciones, incluidos cambios de umbral) y
-  **Lighthouse con accesibilidad 1.00**; consola del navegador sin errores.
+  futuro** del modelo, **precios entre casas** con `mock` y los nuevos: sigma
+  walk-forward del margen, probabilidades y picks de **moneyline**, estado de
+  los picks (¿pegó?/push/pendiente, incluido el empate en ML) y la aritmética
+  del **registro** (% de acierto, ROI, pendientes)).
+- ✅ Verificado con **AppTest** (0 excepciones, incluidos cambios de umbral;
+  16/10/2026: 8 pestañas y el registro con 0 excepciones) y **Lighthouse con
+  accesibilidad 1.00**; consola del navegador sin errores y captura de la
+  pestaña 📋 tomada.
 - ✅ README reescrito (enfoque apuestas + pasos de publicación) y CONTEXTO al día.
 - ✅ Subido a GitHub. La publicación en **Streamlit Cloud queda EN PAUSA por
   decisión del usuario** (16/10/2026): el código y los pasos del README están
@@ -222,15 +234,21 @@ vs ~35% en la temporada completa: buena lección de muestras pequeñas.
 ## Backlog (pendiente) — ideas para seguir optimizando
 
 - [ ] **NUEVO FOCO (pedido del usuario, 16/10/2026) — LA MISIÓN actual:**
-      (1) **picks ampliados**: moneyline (ML) y **props de jugadores**
-      (anytime TD, yardas por tierra, pases de TD, yardas de pase del QB,
-      recepciones/yardas de recepción…); (2) pestaña nueva de **registro y
-      auditoría de picks**: todos los picks con **¿pegó? Sí/No/Push/Pendiente**,
-      marcador y **% de aciertos** de la semana en curso, la temporada y todo
-      el histórico, por mercado. Detalle en `PROMPT_NUEVO_CHAT.md`
-      (sección «LA MISIÓN»). Ojo: las líneas de props seguramente NO están en
-      el plan gratis de The Odds API (verificar en 2026); sin línea real, un
-      prop se marca como **proyección**, nunca como apuesta con valor.
+      detalle en `PROMPT_NUEVO_CHAT.md` (sección «LA MISIÓN»).
+      - [x] **Fase 1 (16/10/2026): ML + pestaña 📋 Registro/auditoría de
+        picks** (spread, totales y moneyline; 49 tests; AppTest 0 excepciones).
+      - [ ] **Fase 2: props de jugadores** walk-forward (anytime TD, yardas por
+        tierra, pases de TD, yardas de pase del QB, recepciones/yardas de
+        recepción; ventana móvil + encogimiento, Poisson para los TDs).
+      - [ ] **Fase 3: líneas reales de props** de The Odds API **bajo demanda
+        por partido** (decisión del usuario, 16/10/2026), integradas al registro.
+      ✅ **Viabilidad verificada en vivo (16/10/2026)**: el plan gratis **SÍ
+      incluye props** (prueba real `player_pass_tds`, 1 crédito; 484
+      restantes). Coste props = mercados × regiones por partido; `/sports` y
+      `/events` gratis. Stats de jugadores: release nflverse `stats_player`
+      (`stats_player_week_2026.csv` existe). ML real en `nfl_games.csv`
+      (`home_moneyline`/`away_moneyline`, ~100 % desde 2007). Sin línea real,
+      un prop se marca como **proyección**.
 - [ ] Publicar gratis en **Streamlit Community Cloud** (link compartible).
       **EN PAUSA por decisión del usuario** (16/10/2026). Repo ya subido;
       pasos en `README.md` (sección "Publicar gratis").

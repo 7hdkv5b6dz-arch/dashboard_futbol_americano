@@ -6,7 +6,8 @@ Análisis de apuestas deportivas con datos reales de nflverse: mercado
 (spread, totales, vig), rendimiento ATS por equipo, totales y clima,
 números clave y un MODELO de pronósticos walk-forward (entrena solo con
 el pasado, nunca con el resultado que intenta predecir) cuyo historial
-completo se muestra sin maquillar.
+completo se muestra sin maquillar. Los picks (spread, totales y moneyline)
+llevan su REGISTRO de auditoría: qué pegó, qué no, % de acierto y ROI.
 
 Aviso honesto: el mercado de la NFL es casi perfecto y la casa cobra el
 vig. Nada de lo que hay aquí garantiza ganar dinero. +18. Juego responsable.
@@ -494,8 +495,9 @@ c4.metric(
          "en los partidos filtrados. Negativo = la casa gana, como esperarías.",
 )
 
-tab_picks, tab_ats, tab_totales, tab_clave, tab_mercado, tab_precios, tab_temporadas = st.tabs([
+tab_picks, tab_registro, tab_ats, tab_totales, tab_clave, tab_mercado, tab_precios, tab_temporadas = st.tabs([
     "🎯 Picks del modelo",
+    "📋 Registro de picks",
     "📈 ATS por equipo",
     "🎲 Totales y clima",
     "🧮 Números clave",
@@ -846,6 +848,268 @@ Las cuotas son las reales de nflverse (desde 2006); antes se asume −110.
             "garantiza acertar más. Si la ventaja real existiera y el mercado "
             "no la viera, esta escalera subiría... y no sube."
         )
+
+
+# ===========================================================================
+# TAB 1B — REGISTRO DE PICKS (la auditoría: ¿pegó o no?)
+# ===========================================================================
+with tab_registro:
+    st.header("📋 Registro de picks")
+
+    st.markdown(
+        "La **auditoría de todos los picks** del modelo — spread, totales y "
+        "moneyline — cada uno con su resultado real (**¿pegó o no?**), el "
+        "marcador y el **% de acierto por mercado**. Cada pick se emitió "
+        "*walk-forward* (sin ver el futuro); aquí solo se comprueba qué pasó. "
+        "Los partidos que aún no se juegan quedan **pendientes** hasta que se "
+        "jueguen y pulses **🔄 Actualizar líneas**."
+    )
+
+    c1, c2 = st.columns(2)
+    umbral_reg = c1.select_slider(
+        "Umbral de edge: spread y totales (puntos)",
+        options=[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0], value=2.0, key="umbral_reg",
+        help="Igual que en la pestaña 🎯: solo aparecen los picks que lo superan.",
+    )
+    umbral_ml_reg = c2.select_slider(
+        "Umbral de edge: moneyline (puntos de probabilidad)",
+        options=[2, 3, 4, 5, 6, 7, 8], value=4, key="umbral_ml_reg",
+        help="Ventaja mínima del modelo sobre el mercado (sin vig), en puntos "
+             "porcentuales de probabilidad.",
+    )
+
+    EMOJI_ESTADO = {
+        "Pegó": "✅ Pegó", "No pegó": "❌ No pegó",
+        "Push": "➖ Push", "Pendiente": "⏳ Pendiente",
+    }
+
+    era_reg = hist_picks[hist_picks["season"] >= 2006].copy()
+    sigma_serie = era_reg["sigma_modelo"].dropna()
+    sigma_hoy = float(sigma_serie.iloc[-1]) if len(sigma_serie) else float("nan")
+    futuros_reg = picks_futuros.copy()
+    futuros_reg["sigma_modelo"] = sigma_hoy
+
+    def _bloque_registro(picks, mercado, texto_pick, lineas, edges, jugado):
+        """Normaliza un bloque de picks evaluados a las columnas del registro."""
+        return pd.DataFrame({
+            "temporada": picks["season"].astype(int),
+            "semana": picks["week"].astype(int),
+            "fecha": picks["gameday"].astype(str),
+            "partido": (picks["away_team"].map(lambda e: APODOS.get(e, e))
+                        + " @ "
+                        + picks["home_team"].map(lambda e: APODOS.get(e, e))),
+            "mercado": mercado,
+            "pick": texto_pick,
+            "linea": lineas,
+            "edge": edges,
+            "cuota": pd.to_numeric(picks["cuota"], errors="coerce"),
+            "gano": picks["gano"].astype("boolean"),
+            "ganancia": pd.to_numeric(picks["ganancia"], errors="coerce"),
+            "jugado": jugado,
+        })
+
+    hs = evaluar_spread(era_reg, umbral_reg)
+    ht = evaluar_totales(era_reg, umbral_reg)
+    hm = datos.evaluar_picks_ml(era_reg, umbral=umbral_ml_reg / 100.0)
+    fs = evaluar_spread(futuros_reg, umbral_reg)
+    ft = evaluar_totales(futuros_reg, umbral_reg)
+    fm = datos.evaluar_picks_ml(futuros_reg, umbral=umbral_ml_reg / 100.0)
+
+    registro = pd.concat([
+        _bloque_registro(
+            hs, "Spread",
+            [etiqueta_pick(eq, li) for eq, li in zip(hs["pick"], hs["linea_pick"])],
+            hs["linea_pick"].map(lambda x: f"{x:+.1f}"),
+            hs["edge"].map(lambda x: f"{x:+.1f} pts"),
+            True),
+        _bloque_registro(
+            ht, "Total", ht["pick"],
+            ht["total_line"].map(lambda x: f"{x:.1f}"),
+            ht["edge"].map(lambda x: f"{x:+.1f} pts"),
+            True),
+        _bloque_registro(
+            hm, "Moneyline",
+            hm["pick"].map(lambda e: f"{APODOS.get(e, e)} gana"),
+            pd.Series("—", index=hm.index),
+            (hm["edge"] * 100).map(lambda x: f"{x:+.1f}%"),
+            True),
+        _bloque_registro(
+            fs, "Spread",
+            [etiqueta_pick(eq, li) for eq, li in zip(fs["pick"], fs["linea_pick"])],
+            fs["linea_pick"].map(lambda x: f"{x:+.1f}"),
+            fs["edge"].map(lambda x: f"{x:+.1f} pts"),
+            False),
+        _bloque_registro(
+            ft, "Total", ft["pick"],
+            ft["total_line"].map(lambda x: f"{x:.1f}"),
+            ft["edge"].map(lambda x: f"{x:+.1f} pts"),
+            False),
+        _bloque_registro(
+            fm, "Moneyline",
+            fm["pick"].map(lambda e: f"{APODOS.get(e, e)} gana"),
+            pd.Series("—", index=fm.index),
+            (fm["edge"] * 100).map(lambda x: f"{x:+.1f}%"),
+            False),
+    ], ignore_index=True)
+
+    registro["estado"] = datos.estado_picks(registro["gano"], registro["jugado"])
+    registro["Estado"] = registro["estado"].map(EMOJI_ESTADO)
+    registro = registro.sort_values(
+        ["temporada", "semana", "partido"], ascending=[False, False, True]
+    )
+
+    COLUMNAS_TABLA = {
+        "fecha": "Fecha", "partido": "Partido", "mercado": "Mercado",
+        "pick": "Pick", "linea": "Línea", "edge": "Edge", "cuota": "Cuota",
+        "Estado": "Estado", "ganancia": "Ganancia $1",
+    }
+    CONFIG_TABLA = {
+        "Cuota": st.column_config.NumberColumn(format="%+.0f"),
+    }
+
+    def _tabla_picks(datos_vista):
+        """Tabla de picks lista para mostrar (ganancia vacía si pendiente)."""
+        v = datos_vista[["fecha", "partido", "mercado", "pick", "linea", "edge",
+                         "cuota", "Estado", "ganancia"]].rename(columns=COLUMNAS_TABLA)
+        v = v.copy()
+        pendiente = v["Estado"].str.contains("Pendiente")
+        v["Ganancia $1"] = [
+            "" if es_pendiente or pd.isna(g) else f"{g:+.2f}"
+            for es_pendiente, g in zip(pendiente, v["Ganancia $1"])
+        ]
+        return v
+
+    # --- La jornada, pick a pick -----------------------------------------
+    st.subheader("🗓️ La jornada, pick a pick")
+
+    temporada_actual = int(calendario["season"].max())
+    de_temporada = registro[registro["temporada"] == temporada_actual]
+    pendientes_sem = de_temporada[de_temporada["estado"] == "Pendiente"]
+    if len(pendientes_sem):
+        semana_actual = int(pendientes_sem["semana"].min())
+    else:
+        semana_actual = int(de_temporada["semana"].max())
+    opciones_sem = [semana_actual] + sorted(
+        s for s in de_temporada["semana"].unique() if s != semana_actual
+    )
+
+    def _etiqueta_semana(s):
+        curso = " · en curso" if s == semana_actual else ""
+        return f"Semana {s}{curso}"
+
+    sem = st.selectbox("Jornada a auditar:", opciones_sem,
+                       format_func=_etiqueta_semana, key="semana_registro")
+    de_la_semana = de_temporada[de_temporada["semana"] == sem]
+
+    if len(de_la_semana):
+        pegados = int((de_la_semana["estado"] == "Pegó").sum())
+        fallados = int((de_la_semana["estado"] == "No pegó").sum())
+        pendientes = int((de_la_semana["estado"] == "Pendiente").sum())
+        decididas = pegados + fallados
+        resueltas = de_la_semana[de_la_semana["estado"] != "Pendiente"]
+        roi_sem = float(resueltas["ganancia"].mean()) * 100 if len(resueltas) else float("nan")
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Picks de la jornada", len(de_la_semana), border=True,
+                  help="Spread + totales + moneyline que superan el umbral.")
+        m2.metric("Marcador (pegados–fallados)", f"{pegados}–{fallados}", border=True,
+                  help="Solo picks ya resueltos. Los push devuelven el dinero y no cuentan.")
+        m3.metric("% de acierto", f"{pegados / decididas * 100:.1f}%" if decididas else "—",
+                  border=True,
+                  help="Pegados entre los resueltos (sin push ni pendientes).")
+        m4.metric("Pendientes", pendientes, border=True,
+                  help="Se resuelven solos cuando la jornada se juega y actualizas las líneas.")
+        if np.isfinite(roi_sem):
+            st.caption(f"ROI de la jornada resuelta: **{roi_sem:+.1f}%** por cada dólar "
+                       "apostado (los push cuentan como 0, igual que en el resto de la app).")
+
+        st.dataframe(_tabla_picks(de_la_semana), hide_index=True, width="stretch",
+                     column_config=CONFIG_TABLA)
+    else:
+        st.info("Esta jornada no tiene picks con el umbral elegido.")
+
+    # --- Acumulado --------------------------------------------------------
+    st.subheader("📊 Acumulado: cómo va de verdad")
+
+    alcance = st.radio(
+        "Alcance:",
+        [f"Temporada {temporada_actual}", "Histórico completo (desde 2006)"],
+        horizontal=True, key="alcance_registro",
+    )
+    sub = de_temporada if alcance.startswith("Temporada") else registro
+
+    if len(sub):
+        peg = int((sub["estado"] == "Pegó").sum())
+        fal = int((sub["estado"] == "No pegó").sum())
+        pen = int((sub["estado"] == "Pendiente").sum())
+        pus = int((sub["estado"] == "Push").sum())
+        resueltas_sub = sub[sub["estado"] != "Pendiente"]
+        acierto_sub = 100.0 * peg / (peg + fal) if (peg + fal) else float("nan")
+        roi_sub = float(resueltas_sub["ganancia"].mean()) * 100 if len(resueltas_sub) else float("nan")
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Picks totales", len(sub), border=True,
+                  help="Todos los picks emitidos (los pendientes no cuentan en el %).")
+        m2.metric("Marcador", f"{peg}–{fal}", border=True,
+                  help=f"Pegados–fallados. Push: {pus} (no cuentan).")
+        m3.metric("% de acierto", f"{acierto_sub:.1f}%" if np.isfinite(acierto_sub) else "—",
+                  border=True)
+        m4.metric("ROI por $1", f"{roi_sub:+.1f}%" if np.isfinite(roi_sub) else "—",
+                  border=True, help="Sobre los picks resueltos; push = $0.")
+
+        resumen_reg = datos.resumen_picks(sub)
+        resumen_reg = resumen_reg[["mercado", "picks", "pegados", "fallados", "push",
+                                   "pendientes", "pct_acierto", "roi"]].rename(columns={
+            "mercado": "Mercado", "picks": "Picks", "pegados": "Pegaron",
+            "fallados": "Fallaron", "push": "Push", "pendientes": "Pendientes",
+            "pct_acierto": "% acierto", "roi": "ROI %",
+        })
+        st.dataframe(
+            resumen_reg, hide_index=True, width="stretch",
+            column_config={
+                "% acierto": st.column_config.NumberColumn(format="%.1f%%"),
+                "ROI %": st.column_config.NumberColumn(format="%+.1f%%"),
+            },
+        )
+        st.caption(
+            "El **% de acierto** se calcula sobre las apuestas decididas (los push "
+            "devuelven el dinero y quedan fuera). El **ROI** promedia las resueltas "
+            "con los push como $0. Si sale en rojo, es la realidad: batir al "
+            "mercado es dificilísimo — eso también se aprende."
+        )
+    else:
+        st.info("Todavía no hay picks para este alcance.")
+
+    # --- Todos los picks ---------------------------------------------------
+    st.subheader("🧾 Todos los picks, uno a uno")
+
+    f1, f2, f3 = st.columns(3)
+    temporadas_disp = ["Todas"] + sorted(
+        (int(t) for t in registro["temporada"].unique()), reverse=True)
+    equipos_disp = ["Todos"] + sorted({
+        p for partido in registro["partido"] for p in partido.split(" @ ")
+    })
+    temp_sel = f1.selectbox("Temporada:", temporadas_disp, key="temp_registro")
+    equipo_sel = f2.selectbox("Equipo:", equipos_disp, key="equipo_registro")
+    mercado_sel = f3.selectbox("Mercado:", ["Todos", "Spread", "Total", "Moneyline"],
+                               key="mercado_registro")
+
+    vista = registro
+    if temp_sel != "Todas":
+        vista = vista[vista["temporada"] == temp_sel]
+    if equipo_sel != "Todos":
+        vista = vista[vista["partido"].str.contains(equipo_sel, regex=False)]
+    if mercado_sel != "Todos":
+        vista = vista[vista["mercado"] == mercado_sel]
+
+    MAX_FILAS = 300
+    st.dataframe(_tabla_picks(vista.head(MAX_FILAS)), hide_index=True, width="stretch",
+                 column_config=CONFIG_TABLA)
+    st.caption(
+        f"Mostrando {min(len(vista), MAX_FILAS)} de {len(vista)} picks (temporada y "
+        "semana más nuevas primero). Esta lista es la prueba de todo lo demás: "
+        "cada pick, con su resultado real, sin borrar los fallos."
+    )
 
 
 # ===========================================================================

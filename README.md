@@ -11,28 +11,34 @@ sin maquillar.
 > datos). 🔞 Solo para +18. Juega responsablemente y nunca apuestes dinero que
 > no puedas permitirte perder.
 
-## Las 7 pestañas (23 gráficas)
+## Las 8 pestañas (23 gráficas)
 
 1. **🎯 Picks del modelo** — pronósticos de la jornada pendiente (solo donde la
    línea ya está publicada) + historial *walk-forward* desde 2006: ROI, % de
    acierto, banca acumulada y la prueba honesta de que *más edge no garantiza
    más acierto*. Puedes mover el **umbral de edge** con un control.
-2. **📈 ATS por equipo** — récord contra la línea de cada equipo, **mapa de
+2. **📋 Registro de picks** — la auditoría de las apuestas: todos los picks
+   (spread, totales y **moneyline**, con las cuotas reales de nflverse) con su
+   estado — ✅ Pegó · ❌ No pegó · ➖ Push · ⏳ Pendiente —, el marcador de la
+   jornada, el **% de acierto y el ROI por mercado**, el acumulado de la
+   temporada y del histórico desde 2006, y filtros por temporada, equipo y
+   mercado. Al actualizar las líneas tras jugarse, los pendientes se resuelven.
+3. **📈 ATS por equipo** — récord contra la línea de cada equipo, **mapa de
    calor equipo × semana**, favoritos cubriendo por tamaño de línea y por
    temporada, y todos los partidos con su resultado ATS.
-3. **🎲 Totales y clima** — % de *overs* por equipo, puntos reales vs. línea
+4. **🎲 Totales y clima** — % de *overs* por equipo, puntos reales vs. línea
    del mercado semana a semana, y el efecto del viento y la temperatura.
-4. **🧮 Números clave** — por qué mandan el 3 y el 7, dónde se «clava» la línea
+5. **🧮 Números clave** — por qué mandan el 3 y el 7, dónde se «clava» la línea
    (*push*), el descanso y el mito del primetime.
-5. **💰 Mercado y vig** — ventaja de la casa (moneyline y spread), calibración
+6. **💰 Mercado y vig** — ventaja de la casa (moneyline y spread), calibración
    del precio y la **banca a ciegas**: apostar siempre lo mismo pierde,
    temporada tras temporada.
-6. **🛒 Precios entre casas** — cuotas **reales de la próxima jornada** en
+7. **🛒 Precios entre casas** — cuotas **reales de la próxima jornada** en
    varias casas (The Odds API, plan gratuito) para comparar la comisión
    (*vig*) de cada una: quién paga mejor cada lado y cuánto cambia la misma
    apuesta de una casa a otra. Requiere una **clave gratuita** (2 minutos);
    sin ella, la pestaña solo muestra las instrucciones.
-7. **📊 Temporadas** — la liga entera temporada a temporada (2020–hoy): puntos
+8. **📊 Temporadas** — la liga entera temporada a temporada (2020–hoy): puntos
    por partido, % de overs, % de favoritos cubriendo y ROI a ciegas año a año,
    para comprobar si las «tendencias» se repiten (casi nunca) y comparar la
    temporada en curso con las anteriores.
@@ -45,6 +51,12 @@ sin maquillar.
   él; el resultado nunca se usa para predecirse a sí mismo.
 - Compara su pronóstico con la línea → el **edge**. Si supera el umbral
   elegido, emite *pick*. Los *push* devuelven el dinero y no cuentan.
+- **Moneyline**: el margen pronosticado se convierte en probabilidad de
+  victoria (normal con el error real del modelo, σ ≈ 13.5 puntos) y se compara
+  con la cuota del mercado **sin** *vig*; emite pick si supera su umbral (en
+  puntos de probabilidad).
+- Todo pick —spread, totales y ML— queda en el **registro** (pestaña 📋) con
+  su resultado real: ✅ pegó, ❌ no pegó, ➖ push o ⏳ pendiente.
 - Las cuotas son las reales de nflverse (desde 2006); antes se asume −110.
 
 ## ¿Cómo se corre?
@@ -76,14 +88,15 @@ pip install -r requirements.txt
 
 Cubren cuotas/vig, la convención del spread, *push*, totales, primetime
 (incluidas las correcciones de 1999–2005), el resumen por temporada, los
-precios entre casas (con datos de laboratorio), el respaldo sin internet y
-que el modelo **no vea el futuro**.
+precios entre casas (con datos de laboratorio), el respaldo sin internet,
+las probabilidades y **picks de moneyline**, el **registro de picks**
+(¿pegó?, % de acierto, ROI) y que el modelo **no vea el futuro**.
 
 ## Archivos
 
 | Archivo | Qué es |
 |---|---|
-| `app.py` | La app de Streamlit (7 pestañas) |
+| `app.py` | La app de Streamlit (8 pestañas) |
 | `datos.py` | Descarga, preparación y modelo de pronósticos |
 | `tests/test_datos.py` | Pruebas básicas |
 | `data/nfl_games.csv` | Caché de partidos y líneas (se baja sola; NO se sube) |
@@ -119,6 +132,10 @@ que el modelo **no vea el futuro**.
 
 ## Próximos pasos
 
+- [ ] **Props de jugadores** (TD, yardas de pase/tierra/recepción) con modelo
+      walk-forward y líneas reales de The Odds API **bajo demanda por partido**.
+- [x] Picks de **moneyline** (cuotas reales) y **registro/auditoría** de todos
+      los picks con % de acierto y ROI por mercado (pestaña 📋).
 - [ ] Comparar **líneas de apertura vs. cierre** (necesita otra fuente).
 - [x] Comparar **precios entre casas** (pestaña 🛒 con The Odds API; clave
       gratuita opcional).

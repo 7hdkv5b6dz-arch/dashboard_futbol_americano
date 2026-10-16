@@ -6,8 +6,10 @@ Cómo correrlas (desde la carpeta del proyecto):
 
 Cubren: cuotas y vig, convención del spread, push, totales, primetime
 (incluidas las correcciones de 1999–2005), el resumen por temporada, los
-precios entre casas (The Odds API), el respaldo sin conexión y el modelo de
-pronósticos (que NO use información del futuro: walk-forward).
+precios entre casas (The Odds API), el respaldo sin conexión, el modelo de
+pronósticos (que NO use información del futuro: walk-forward), las
+probabilidades y picks de moneyline y el registro de picks (¿pegó?, % de
+acierto y ROI).
 """
 
 import itertools
@@ -455,6 +457,152 @@ class ModeloDePronosticos(unittest.TestCase):
         ]))
         fut_raro = datos.pronosticos_futuros(cal, raro)
         self.assertTrue(np.isnan(fut_raro["margen_modelo"].iloc[0]))
+
+
+class PicksMoneylineYRegistro(unittest.TestCase):
+    """Probabilidades del moneyline, picks ML y el registro (¿pegó o no?)."""
+
+    def _juego_ml(self, margen_modelo=6.0, sigma_modelo=13.0, **cambios):
+        """Un partido preparado con pronóstico del modelo ya puesto."""
+        d = preparar(cambios)
+        d["margen_modelo"] = margen_modelo
+        d["sigma_modelo"] = sigma_modelo
+        return d
+
+    # --- probabilidades ---------------------------------------------------
+    def test_probabilidades_ml_simetria_y_crecimiento(self):
+        p50, v50 = datos.probabilidades_ml(pd.Series([0.0]), pd.Series([13.0]))
+        self.assertAlmostEqual(float(p50.iloc[0]), 0.5, places=6)
+        self.assertAlmostEqual(float(v50.iloc[0]), 0.5, places=6)
+
+        p1s, _ = datos.probabilidades_ml(pd.Series([13.0]), pd.Series([13.0]))
+        self.assertGreater(float(p1s.iloc[0]), 0.80)  # +1σ ≈ 84%
+
+        p2n, v2n = datos.probabilidades_ml(pd.Series([-26.0]), pd.Series([13.0]))
+        self.assertLess(float(p2n.iloc[0]), 0.03)    # −2σ ≈ 2%
+        self.assertAlmostEqual(
+            float(p2n.iloc[0]) + float(v2n.iloc[0]), 1.0, places=10)
+
+        sin_sigma, _ = datos.probabilidades_ml(pd.Series([5.0]), pd.Series([float("nan")]))
+        self.assertTrue(np.isnan(float(sin_sigma.iloc[0])))
+
+    # --- evaluación de picks ML ------------------------------------------
+    def test_pick_ml_local_gana(self):
+        # El mercado da ~58% al local (sin vig) y el modelo cree ~82%: pick AAA.
+        d = self._juego_ml(margen_modelo=12.0)
+        ml = datos.evaluar_picks_ml(d, umbral=0.04)
+        self.assertEqual(len(ml), 1)
+        self.assertTrue(bool(ml["al_local"].iloc[0]))
+        self.assertEqual(ml["pick"].iloc[0], "AAA")
+        self.assertEqual(float(ml["cuota"].iloc[0]), -150.0)
+        self.assertTrue(bool(ml["gano"].iloc[0]))  # AAA ganó 24-20
+        self.assertAlmostEqual(float(ml["ganancia"].iloc[0]), 100 / 150, places=6)
+
+    def test_pick_ml_visitante_falla(self):
+        d = self._juego_ml(margen_modelo=-12.0)
+        ml = datos.evaluar_picks_ml(d, umbral=0.04)
+        self.assertEqual(len(ml), 1)
+        self.assertFalse(bool(ml["al_local"].iloc[0]))
+        self.assertEqual(ml["pick"].iloc[0], "BBB")
+        self.assertEqual(float(ml["cuota"].iloc[0]), 130.0)
+        self.assertFalse(bool(ml["gano"].iloc[0]))  # BBB perdió 20-24
+        self.assertEqual(float(ml["ganancia"].iloc[0]), -1.0)
+
+    def test_umbral_y_cuotas_obligatorias(self):
+        # Edge pequeño (margen 3 ≈ 59% vs 58% del mercado): no llega al umbral.
+        d = self._juego_ml(margen_modelo=3.0)
+        self.assertTrue(datos.evaluar_picks_ml(d, umbral=0.04).empty)
+        # Sin cuotas reales no hay pick posible.
+        d2 = self._juego_ml(margen_modelo=12.0,
+                            home_moneyline=float("nan"), away_moneyline=float("nan"))
+        self.assertTrue(datos.evaluar_picks_ml(d2, umbral=0.04).empty)
+
+    def test_empate_en_ml_es_push(self):
+        d = self._juego_ml(margen_modelo=12.0, home_score=20.0, away_score=20.0)
+        ml = datos.evaluar_picks_ml(d, umbral=0.04)
+        self.assertEqual(len(ml), 1)
+        self.assertTrue(pd.isna(ml["gano"].iloc[0]))
+        self.assertEqual(float(ml["ganancia"].iloc[0]), 0.0)
+
+    def test_pendiente_queda_pendiente(self):
+        d = self._juego_ml(margen_modelo=12.0,
+                           home_score=float("nan"), away_score=float("nan"))
+        ml = datos.evaluar_picks_ml(d, umbral=0.04)
+        self.assertEqual(len(ml), 1)
+        self.assertTrue(pd.isna(ml["gano"].iloc[0]))
+        estado = datos.estado_picks(ml["gano"], ml["jugado"])
+        self.assertEqual(estado.iloc[0], "Pendiente")
+
+    # --- sigma walk-forward -----------------------------------------------
+    def test_sigma_margen_matematicas(self):
+        self.assertTrue(np.isnan(datos._sigma_margen([1.0, 2.0], minimo=5)))
+        residuos = [1.0, -1.0, 1.0, -1.0, 2.0]
+        self.assertAlmostEqual(
+            datos._sigma_margen(residuos, minimo=3),
+            float(np.std(residuos, ddof=1)), places=10)
+        # Solo mira la ventana reciente.
+        largos = [0.0] * 50 + [3.0, 3.0]
+        self.assertAlmostEqual(datos._sigma_margen(largos, ventana=2, minimo=2), 0.0)
+
+    def test_sigma_sale_en_pronosticos_y_no_ve_el_futuro(self):
+        crudo, cal = calendario_sintetico()
+        s1 = datos.pronosticos_historicos(cal, minimo_partidos=10)
+        self.assertIn("sigma_modelo", s1.columns)
+        # Con tan pocos partidos aún no hay 100 errores acumulados: vacío.
+        self.assertTrue(s1["sigma_modelo"].isna().all())
+
+        crudo2 = crudo.copy()
+        crudo2.loc[crudo2.index[-1], "home_score"] = 120.0
+        s2 = datos.pronosticos_historicos(datos._preparar(crudo2), minimo_partidos=10)
+        np.testing.assert_allclose(
+            s1["sigma_modelo"].to_numpy()[:-1],
+            s2["sigma_modelo"].to_numpy()[:-1],
+            equal_nan=True,
+        )
+
+    # --- registro ----------------------------------------------------------
+    def test_estado_picks_cuatro_casos(self):
+        gano = pd.Series([True, False, pd.NA, pd.NA], dtype="boolean")
+        jugado = pd.Series([True, True, True, False])
+        estados = datos.estado_picks(gano, jugado)
+        self.assertEqual(list(estados), ["Pegó", "No pegó", "Push", "Pendiente"])
+        # Con el flag escalar (partidos ya jugados) debe alinear, no perderse.
+        estados2 = datos.estado_picks(gano, True)
+        self.assertEqual(len(estados2), 4)
+        self.assertEqual(list(estados2), ["Pegó", "No pegó", "Push", "Push"])
+
+    def test_resumen_picks_matematicas(self):
+        registro = pd.DataFrame({
+            "mercado": ["Spread"] * 4,
+            "estado": ["Pegó", "No pegó", "Push", "Pendiente"],
+            "ganancia": [0.909, -1.0, 0.0, 0.0],
+        })
+        res = datos.resumen_picks(registro)
+        self.assertEqual(len(res), 1)
+        fila = res.iloc[0]
+        self.assertEqual(int(fila["picks"]), 4)
+        self.assertEqual(int(fila["pegados"]), 1)
+        self.assertEqual(int(fila["fallados"]), 1)
+        self.assertEqual(int(fila["push"]), 1)
+        self.assertEqual(int(fila["pendientes"]), 1)
+        self.assertAlmostEqual(float(fila["pct_acierto"]), 50.0)
+        self.assertAlmostEqual(
+            float(fila["roi"]), (0.909 - 1.0 + 0.0) / 3 * 100, places=6)
+
+    def test_resumen_picks_vacio_y_pendientes(self):
+        vacio = datos.resumen_picks(pd.DataFrame(columns=["mercado", "estado", "ganancia"]))
+        self.assertTrue(vacio.empty)
+        self.assertIn("pct_acierto", vacio.columns)
+
+        solo_pendientes = datos.resumen_picks(pd.DataFrame({
+            "mercado": ["Total", "Total"],
+            "estado": ["Pendiente", "Pendiente"],
+            "ganancia": [0.0, 0.0],
+        }))
+        fila = solo_pendientes.iloc[0]
+        self.assertEqual(int(fila["pendientes"]), 2)
+        self.assertTrue(np.isnan(float(fila["pct_acierto"])))
+        self.assertTrue(np.isnan(float(fila["roi"])))
 
 
 if __name__ == "__main__":

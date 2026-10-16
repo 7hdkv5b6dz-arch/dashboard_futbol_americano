@@ -14,6 +14,10 @@ necesitamos para el análisis:
     - clima: techo (interior/exterior), viento y temperatura
     - MODELO de pronósticos (walk-forward, sin ver el futuro): margen y total
       esperados de cada partido, para compararlos con la línea del mercado
+    - moneyline: probabilidad de victoria según el modelo (normal sobre el
+      margen pronosticado) frente a la cuota real del mercado
+    - REGISTRO de picks: estado real de cada pick (Pegó · No pegó · Push ·
+      Pendiente), % de acierto y ROI por mercado, todo walk-forward
     - precios entre casas (The Odds API, opcional con clave gratuita): cuotas
       de la próxima jornada en varias casas deportivas, para comparar la
       comisión (vig) de cada una
@@ -22,6 +26,7 @@ Si no hay internet, cae de vuelta a los datos de ejemplo (data/partidos.csv).
 """
 
 from pathlib import Path
+import math
 
 import numpy as np
 import pandas as pd
@@ -661,13 +666,29 @@ def _columnas_modelo(df: pd.DataFrame) -> pd.DataFrame:
     return df[["season", "week", "home_team", "away_team", "margen", "total_puntos"]]
 
 
+def _sigma_margen(residuos, ventana: int = 500, minimo: int = 100) -> float:
+    """Desvío de los errores recientes del modelo (margen real − pronóstico).
+
+    Sirve para pasar el margen pronosticado a PROBABILIDAD de victoria con una
+    normal: cuanto mejor predice el modelo, más estrecho es el desvío. Se
+    calcula walk-forward (solo con errores ANTERIORES al partido a pronosticar)
+    y devuelve NaN mientras no haya suficientes partidos evaluados.
+    """
+    if len(residuos) < minimo:
+        return float("nan")
+    recientes = np.asarray(residuos[-ventana:], dtype=float)
+    return float(np.std(recientes, ddof=1))
+
+
 def pronosticos_historicos(df_jugados: pd.DataFrame, ventana: int = 2,
                            rigidez: float = 2.0, minimo_partidos: int = 150) -> pd.DataFrame:
-    """Agrega `margen_modelo` y `total_modelo` a los partidos jugados.
+    """Agrega `margen_modelo`, `total_modelo` y `sigma_modelo` a los jugados.
 
     Walk-forward: el pronóstico de cada partido usa solo partidos anteriores
     (los ratings se reajustan al empezar cada jornada). Si todavía no hay
-    suficiente historia, el pronóstico queda vacío (NaN).
+    suficiente historia, el pronóstico queda vacío (NaN). `sigma_modelo` es el
+    desvío de los errores recientes ANTES de cada partido (para las
+    probabilidades de moneyline); NaN hasta tener 150 errores acumulados.
     """
     jugados = df_jugados[df_jugados["jugado"]].sort_values(
         ["season", "week"], kind="stable"
@@ -675,7 +696,8 @@ def pronosticos_historicos(df_jugados: pd.DataFrame, ventana: int = 2,
     equipos = sorted(set(jugados["home_team"]) | set(jugados["away_team"]))
     modelo = _ModeloPuntos(equipos, ventana=ventana, rigidez=rigidez)
 
-    margenes, totales = [], []
+    margenes, totales, sigmas = [], [], []
+    residuos = []  # errores de pronósticos anteriores (margen real − modelo)
     jornada_ajustada = None
     for season, week, local, visitante, margen, total in _columnas_modelo(jugados).itertuples(
         index=False, name=None
@@ -691,11 +713,15 @@ def pronosticos_historicos(df_jugados: pd.DataFrame, ventana: int = 2,
             m, t = float("nan"), float("nan")
         margenes.append(m)
         totales.append(t)
+        sigmas.append(_sigma_margen(residuos))
+        if not math.isnan(m):
+            residuos.append(margen - m)
         modelo.agregar(season, local, visitante, margen, total)
 
     salida = jugados.copy()
     salida["margen_modelo"] = margenes
     salida["total_modelo"] = totales
+    salida["sigma_modelo"] = sigmas
     return salida
 
 
@@ -728,3 +754,119 @@ def pronosticos_futuros(df_jugados: pd.DataFrame, df_pendientes: pd.DataFrame,
     pendientes["margen_modelo"] = margenes
     pendientes["total_modelo"] = totales
     return pendientes
+
+
+# ---------------------------------------------------------------------------
+# MONEYLINE (probabilidad del modelo vs. cuota del mercado)
+# ---------------------------------------------------------------------------
+def _phi(z):
+    """Φ(z): probabilidad acumulada de una normal estándar (sin scipy)."""
+    z = np.asarray(z, dtype=float)
+    if z.size == 0:  # un registro vacío es válido: devolver vacío
+        return z
+    return 0.5 * (1.0 + np.vectorize(math.erf, otypes=[float])(z / math.sqrt(2.0)))
+
+
+def probabilidades_ml(margen_modelo, sigma_modelo):
+    """Margen pronosticado → probabilidad de victoria (local, visitante).
+
+    Usa una normal centrada en el margen con desvío `sigma_modelo` (el error
+    real del modelo medido walk-forward). Los empates son rarísimos en la
+    NFL; si ocurren, la apuesta se trata como push en la evaluación.
+    """
+    m = pd.to_numeric(pd.Series(margen_modelo), errors="coerce").astype(float)
+    s = pd.to_numeric(pd.Series(sigma_modelo), errors="coerce").astype(float)
+    p_local = pd.Series(_phi((m / s).to_numpy()), index=m.index)
+    p_local = p_local.mask(m.isna() | s.isna() | (s <= 0))
+    return p_local, 1.0 - p_local
+
+
+def evaluar_picks_ml(df: pd.DataFrame, umbral: float = 0.04) -> pd.DataFrame:
+    """Picks del modelo al ganador (moneyline), con su resultado.
+
+    El edge se mide en PROBABILIDAD: probabilidad del modelo − probabilidad
+    sin vig del mercado. Solo se emite pick si |edge| ≥ `umbral` (0.04 = 4
+    puntos porcentuales) y el partido trae cuota real. Necesita `margen_modelo`,
+    `sigma_modelo` y las cuotas `home_moneyline`/`away_moneyline` (de
+    `_preparar`). En empate: push (apuesta nula, no cuenta como acierto).
+    """
+    d = df[
+        df["margen_modelo"].notna() & df["sigma_modelo"].notna()
+        & df["home_moneyline"].notna() & df["away_moneyline"].notna()
+        & df["prob_local_sin_vig"].notna()
+    ].copy()
+    p_local, p_visitante = probabilidades_ml(d["margen_modelo"], d["sigma_modelo"])
+    d["prob_local_modelo"] = p_local
+    d["prob_visitante_modelo"] = p_visitante
+    d["edge"] = d["prob_local_modelo"] - d["prob_local_sin_vig"]
+    d = d[d["edge"].abs() >= umbral].copy()
+    d["al_local"] = d["edge"] > 0
+    d["pick"] = d["home_team"].where(d["al_local"], d["away_team"])
+    d["cuota"] = d["home_moneyline"].where(d["al_local"], d["away_moneyline"])
+    gano_local = d["gano_local"].astype("boolean")
+    empate = d["empate"].astype("boolean").fillna(False)
+    gano_visita = (~gano_local).astype("boolean") & ~empate
+    d["gano"] = gano_local.where(d["al_local"], gano_visita).mask(empate)
+    pago = _pago_por_dolar(d["cuota"])
+    d["ganancia"] = pago.where(d["gano"].astype("boolean").fillna(False), -1.0)
+    d["ganancia"] = d["ganancia"].where(d["gano"].notna(), 0.0)
+    return d
+
+
+# ---------------------------------------------------------------------------
+# REGISTRO DE PICKS (auditoría: ¿pegó o no?)
+# ---------------------------------------------------------------------------
+ESTADOS_PICKS = ("Pegó", "No pegó", "Push", "Pendiente")
+
+
+def estado_picks(gano, jugado) -> pd.Series:
+    """Estado de cada pick para el registro: Pegó · No pegó · Push · Pendiente.
+
+    - Se jugó y acertó → "Pegó"; se jugó y falló → "No pegó".
+    - Se jugó pero quedó nula (push: exactamente la línea, o empate en
+      moneyline) → "Push" (devuelve el dinero, no cuenta en el % de acierto).
+    - Aún no se juega → "Pendiente".
+    """
+    gano = pd.Series(gano).astype("boolean")
+    if np.isscalar(jugado):
+        jugado = pd.Series(bool(jugado), index=gano.index)
+    else:
+        jugado = pd.Series(jugado).reindex(gano.index)
+    jugado = jugado.astype("boolean").fillna(False).astype(bool)
+    gano_bool = gano.fillna(False).astype(bool)
+    estado = pd.Series("Pendiente", index=gano.index, dtype=object)
+    estado[jugado & gano.notna() & gano_bool] = "Pegó"
+    estado[jugado & gano.notna() & ~gano_bool] = "No pegó"
+    estado[jugado & gano.isna()] = "Push"
+    return estado
+
+
+def resumen_picks(registro: pd.DataFrame, columna_mercado: str = "mercado") -> pd.DataFrame:
+    """Agrega el registro por mercado: cuántos picks hay y cómo van.
+
+    Espera las columnas `mercado`, `estado` y `ganancia` ($ por $1 apostado).
+    Devuelve una fila por mercado con: picks, pegados, fallados, push,
+    pendientes, pct_acierto (% sobre las decididas, sin push) y roi (% por $1
+    sobre las resueltas; los push cuentan como $0, igual que en el resto de
+    la app).
+    """
+    columnas = ["mercado", "picks", "pegados", "fallados", "push",
+                "pendientes", "pct_acierto", "roi"]
+    if not len(registro):
+        return pd.DataFrame(columns=columnas)
+    filas = []
+    for mercado, g in registro.groupby(columna_mercado, sort=False):
+        pegados = int((g["estado"] == "Pegó").sum())
+        fallados = int((g["estado"] == "No pegó").sum())
+        push = int((g["estado"] == "Push").sum())
+        pendientes = int((g["estado"] == "Pendiente").sum())
+        decididas = pegados + fallados
+        pct = 100.0 * pegados / decididas if decididas else float("nan")
+        resueltas = g[g["estado"] != "Pendiente"]
+        roi = 100.0 * float(resueltas["ganancia"].mean()) if len(resueltas) else float("nan")
+        filas.append({
+            "mercado": mercado, "picks": len(g), "pegados": pegados,
+            "fallados": fallados, "push": push, "pendientes": pendientes,
+            "pct_acierto": pct, "roi": roi,
+        })
+    return pd.DataFrame(filas)
