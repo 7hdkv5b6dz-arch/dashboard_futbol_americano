@@ -26,8 +26,8 @@ públicos y reales de nflverse. Hoy tiene 8 pestañas (🎯 Picks del modelo ·
 📋 Registro de picks · 📈 ATS por equipo · 🎲 Totales y clima · 🧮 Números
 clave · 💰 Mercado y vig · 🛒 Precios entre casas · 📊 Temporadas) y un
 **modelo de pronósticos walk-forward** (estilo SRS, sin mirar el futuro) cuyo
-historial se muestra tal cual: ~50% ATS con ROI ≈ −2%, ML 42.2% de acierto y
-ROI −5.5%. La pestaña **📋 Registro de picks** audita todos los picks (¿pegó o
+historial se muestra tal cual: ~50.7% ATS con ROI ≈ −1.4%, ML 37.3% de
+acierto y ROI −4.8% (modelo **srs-v2**). La pestaña **📋 Registro de picks** audita todos los picks (¿pegó o
 no?, % de acierto y ROI por mercado), incluye el **registro fiel** (📌
 congelar los picks con su línea/cuota del momento — inmutable) y la **calidad
 de las probabilidades** (Brier, Log Loss y curva de calibración vs. el mercado
@@ -38,10 +38,11 @@ ganancias y con avisos de juego responsable; los resultados malos se enseñan
 sin maquillar. 🔞 +18.
 
 **Hoy (16/10/2026) el mercado es el listón y el modelo NO lo bate:** Brier
-modelo/mercado → spread 0.2645/0.2501, total 0.2617/0.2501, ML 0.2268/0.2117;
-en picks el modelo está sobreconfiado (dice 55–60%, pega 39%). Cualquier
-«valor esperado» serio necesita primero calibración decente — ese es el
-trabajo en curso.
+modelo/mercado → spread 0.2607/0.2501, total 0.2596/0.2501, ML 0.2254/0.2117;
+en picks sigue sobreconfiado (en ML, todos los tramos dicen 11–16 pp más de lo
+que pega). El **Bloque 3** acaba de subir la calibración (srs-v2: rigidez 8,
+validada en holdout); el «valor esperado» serio sigue pendiente — eso es el
+**Bloque 4**.
 
 ## 🎯 LA MISIÓN — el usuario quiere ESTO
 
@@ -59,30 +60,40 @@ auditoría + línea base ya están hechas; el plan va por bloques:
 > hay EV inventado; los viejos van como 🧮 Reconstruido) + **métricas de
 > probabilidad** (Brier/LogLoss/calibración vs mercado en 📋) + **fix de la
 > micro-fuga del σ** (congelado al empezar cada jornada + `sigma_total_modelo`
-> + `sigma_actual()` para la pendiente). 60 tests; AppTest probando el botón
+> + `sigma_actual()` para la pendiente). 60 tests (62 con el Bloque 3); AppTest probando el botón
 > real contra un registro temporal; Lighthouse 1.00.
 >
+> ✅ **HECHO — Bloque 3 (16/10/2026) — modelo srs-v2**: comparación de
+> ventana × rigidez + σ con protocolo fijado ANTES (selección 2006–2017;
+> holdout 2018–2025 evaluado UNA vez). Instrumento corregido tras detectar
+> que «ventana=1» ganaba solo por NO pronosticar las semanas 1–10 (mismo
+> conjunto de partidos para todas; sin pronóstico = moneda al aire; cobertura
+> ≥ 98% obligatoria). Ganó **rigidez 8** (ventana 2 y σ 500 se quedan;
+> `VERSION_MODELO = "srs-v2"`): Δ Brier medio −0.0022, IC95 % [−0.0029,
+> −0.0014], mejora en 8/8 temporadas del holdout, ROI de picks sin alarma,
+> AppTest 0 excepciones. El modelo sigue sin batir al mercado.
+>
 > ⏭️ **LO SIGUIENTE (en orden)**:
-> 1. **Bloque 3 — comparar modelos con holdout**: probar variantes
->    (ventana/rigidez/σ) y decidir **antes** con temporadas de prueba no usadas
->    para elegir; documentar la selección. Sin tuning sobre la evaluación.
-> 2. **Bloque 4 — filtros/EV**: dos objetivos SEPARADOS (probabilidad alta vs.
+> 1. **Bloque 4 — filtros/EV**: dos objetivos SEPARADOS (probabilidad alta vs.
 >    EV+ con break-even 1/d, push-aware, sin-vig documentado); permitir **cero
 >    picks** si no hay ventaja.
-> 3. **Bloque 5 — UI final por pick**: mercado/selección, línea+cuota real,
+> 2. **Bloque 5 — UI final por pick**: mercado/selección, línea+cuota real,
 >    prob. estimada, break-even, EV, edge, incertidumbre (muestra), motivos,
 >    hora y versión del modelo; 4 estados (prob. alta / EV+ / ambos / sin
 >    ventaja). Nunca «seguro»/«garantizado».
-> 4. Después: **Fase 2/3** (props de jugadores + líneas reales bajo demanda).
+> 3. Después: **Fase 2/3** (props de jugadores + líneas reales bajo demanda).
+>    (Opcional futuro: explorar rigidez 16/32 — el ganador quedó en el borde
+>    de la rejilla; recordar que más compresión = más «eco» del mercado.)
 >
-> 📏 **Números de la línea base post-fix** (reproducibles con el laboratorio):
-> spread 2.0 → n=3528, 50.2%, ROI −2.2% (t=−1.33); total 2.0 → n=3392, 51.2%,
-> −0.5% (t=−0.29); ML 4pp → n=3861, 42.2%, −5.5% (t=−2.62). Brier (todos los
-> partidos desde 2006): modelo 0.2645/0.2617/0.2268 vs mercado 0.2501/0.2501/
-> 0.2117 (spread/total/ML). El mercado sin vig calibra ±3 pp: es el rival y
-> hoy gana en los tres mercados. Escalera de edge invertida en ML (15+ pp →
-> 38% de acierto). Cuotas: una sola línea por partido, sin open/close → **CLV
-> imposible** con los datos actuales (documentado).
+> 📏 **Números de la línea base (srs-v2, 16/10/2026)** (reproducibles con el
+> laboratorio): spread 2.0 → n=3230, 50.7%, ROI −1.4% (t=−0.83); total 2.0 →
+> n=3207, 51.4%, −0.1% (t=−0.04); ML 4pp → n=3858, 37.3%, −4.8% (t=−2.09; más
+> underdogs). Brier (todos los partidos desde 2006): modelo
+> 0.2607/0.2596/0.2254 vs mercado 0.2501/0.2501/0.2117 (spread/total/ML). El
+> mercado sin vig calibra ±3 pp: es el rival y hoy gana en los tres mercados.
+> Escalera de edge invertida en ML (15+ pp → 33.7% de acierto). Cuotas: una
+> sola línea por partido, sin open/close → **CLV imposible** con los datos
+> actuales (documentado).
 
 ### 1) Ampliar los picks del modelo (muchos más mercados)
 
@@ -90,11 +101,11 @@ Hoy hay spread, totales y ✅ **moneyline**. Falta lo grande: los **props**, y
 todo lo del plan de bloques de arriba.
 
 - ✅ **Moneyline (ML)** — HECHO (16/10/2026): probabilidad del modelo desde el
-  margen (normal con σ walk-forward ≈ 13.5, congelado por jornada) contra la
+  margen (normal con σ walk-forward ≈ 13.4, congelado por jornada) contra la
   cuota real del mercado sin *vig*; umbral en puntos de probabilidad (defecto
   4). Funciones: `datos.probabilidades_ml` y `datos.evaluar_picks_ml`.
-  Resultado sin maquillar: **42.2 % de acierto, ROI −5.5 %** desde 2006
-  (mayormente underdogs).
+  Resultado sin maquillar (srs-v2): **37.3 % de acierto, ROI −4.8 %** desde
+  2006 (mayormente underdogs).
 - **Props de jugadores** (todo walk-forward, sin mirar el futuro, y con
   backtest honesto por mercado):
   - **Anytime TD**: ¿anota el jugador? (RB/WR/TE; QB si corre).
@@ -191,7 +202,7 @@ memoria y verás un `AttributeError`.
   con valor), y **nunca cuotas inventadas**.
 - **Verificación antes de dar algo por bueno:**
   1. `python -m py_compile app.py datos.py`
-  2. `.venv/bin/python -m unittest discover -s tests -t .` (hoy pasan 60;
+  2. `.venv/bin/python -m unittest discover -s tests -t .` (hoy pasan 62;
      añade pruebas de todo lo nuevo: modelo de props, cálculo de «¿pegó?»,
      % de aciertos, sin fuga de futuro también en props, y mantén verdes las
      de σ congelado por jornada, Brier/LogLoss/calibración y registro fiel).
@@ -213,36 +224,37 @@ memoria y verás un `AttributeError`.
 
 ## ⚠️ Al empezar: commit pendiente del usuario
 
-Hay cambios sin commitear (16/10/2026, **Bloque 1+2 de la auditoría**):
-`datos.py` (σ congelado por jornada + `sigma_total_modelo` + `sigma_actual`,
-probabilidad de superar, Brier/LogLoss/calibración, y la sección de **registro
-fiel**), `app.py` (secciones nuevas en 📋: registro fiel y calidad de las
-probabilidades), `tests/test_datos.py` (60 tests), `CONTEXTO.md`,
-`PROMPT_NUEVO_CHAT.md` y `README.md`. **Recuérdale al usuario commitear
-primero** en GitHub Desktop para partir de una base limpia (mensaje sugerido:
-«Auditoría 1+2: registro fiel de picks + calidad de probabilidades (Brier) +
-σ congelado por jornada»). Nota: `data/registro_picks.csv` aún no existe;
-cuando el usuario pulse «📌 Congelar», ese CSV también se commitea (es parte
-del registro).
+El Bloque 1+2 ya está commiteado (`97f461c`, con 46 picks srs-v1 congelados).
+El 16/10/2026 (10:59) el usuario **pulsó «📌 Congelar» con el srs-v2 activo**:
+el registro pasó a **50 picks** (46 srs-v1 intactos + 4 nuevos srs-v2; los
+valores congelados no cambiaron — verificado). **Pendiente de commitear
+(16/10/2026, Bloque 3)**: `datos.py` (rigidez 2.0 → 8.0 y
+`VERSION_MODELO = "srs-v2"`), `tests/test_datos.py` (62 tests: +2 del modelo
+validado), `data/registro_picks.csv` (los 4 picks nuevos), `CONTEXTO.md`,
+`PROMPT_NUEVO_CHAT.md` y `README.md`. **Recuérdale al usuario commitear con
+GitHub Desktop** (mensaje sugerido: «Auditoría Bloque 3: modelo srs-v2
+(rigidez 8, validada con holdout)»).
 
 ## Estado actual
 
 El detalle está en `CONTEXTO.md` (sección "Estado actual"). En resumen: app
-**verificada** (60/60 tests, AppTest sin excepciones —incluido el botón 📌 de
-congelar contra un registro temporal—, Lighthouse 1.00, consola sin errores),
-**8 pestañas**, con el **registro fiel** y la **calidad de probabilidades**
-(Brier/LogLoss/calibración) ya en 📋. Series de apuestas: ~50% ATS (ROI ≈ −2%),
-totales ~51% (ROI ≈ −0.5%) y ML 42.2% (ROI −5.5%) — sin maquillar. La
-publicación en Streamlit Cloud sigue **en pausa por decisión del usuario**
-(16/10/2026). La clave de The Odds API vive en `.streamlit/secrets.toml` (no
-se sube nunca); quedan ~484 créditos y la auditoría no gastó ninguno.
+**verificada** (62/62 tests, AppTest sin excepciones —incluido el botón 📌 de
+congelar contra un registro temporal, también con srs-v2—, Lighthouse 1.00,
+consola sin errores), **8 pestañas**, con el **registro fiel** y la **calidad
+de probabilidades** (Brier/LogLoss/calibración) en 📋, y el modelo **srs-v2**
+(rigidez 8, validada con holdout en el Bloque 3) ya activo. Series de
+apuestas: ~50.7% ATS (ROI ≈ −1.4%), totales ~51.4% (ROI ≈ −0.1%) y ML 37.3%
+(ROI −4.8%) — sin maquillar. La publicación en Streamlit Cloud sigue **en
+pausa por decisión del usuario** (16/10/2026). La clave de The Odds API vive
+en `.streamlit/secrets.toml` (no se sube nunca); quedan ~484 créditos y la
+auditoría no gastó ninguno.
 
 ## Pendientes (backlog)
 
 - [ ] **LA MISIÓN** — auditoría en curso: ✅ auditoría+línea base, ✅ Bloque
-      1+2 (registro fiel + métricas + σ). **Siguiente: Bloque 3 (comparación de
-      modelos con holdout), Bloque 4 (filtros/EV), Bloque 5 (UI final por
-      pick)**; después Fase 2/3 (props de jugadores + líneas reales).
+      1+2 (registro fiel + métricas + σ), ✅ Bloque 3 (holdout → srs-v2).
+      **Siguiente: Bloque 4 (filtros/EV), Bloque 5 (UI final por pick)**;
+      después Fase 2/3 (props de jugadores + líneas reales).
 - [ ] Publicar en **Streamlit Community Cloud** (en pausa por ahora; repo ya
       subido, pasos en el README).
 - [ ] Comparar **líneas de apertura vs. cierre** (necesita otra fuente).
@@ -255,9 +267,9 @@ Antes de escribir código:
 
 1. Lee `CONTEXTO.md` y `README.md` completos y **dime en dos líneas qué hace
    la app y cuáles son las decisiones técnicas más importantes**.
-2. El plan de la auditoría ya está decidido (arriba): lo siguiente es el
-   **Bloque 3 — comparación de modelos con holdout**, luego Bloques 4 y 5.
-   Confírmame el plan con tus palabras antes de tocar nada.
+2. El plan de la auditoría ya está decidido (arriba): Bloque 3 HECHO (srs-v2);
+   lo siguiente es el **Bloque 4 — filtros/EV**, luego el Bloque 5. Confírmame
+   el plan con tus palabras antes de tocar nada.
 3. Reglas no negociables: **sin fuga de datos** (los picks solo usan lo
    disponible al emitirse; sin resultados futuros), **sin tuning sobre las
    temporadas de evaluación**, dos objetivos separados (probabilidad alta vs.

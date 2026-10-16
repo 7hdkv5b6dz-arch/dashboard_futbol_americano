@@ -579,8 +579,9 @@ def analizar_precios_casas(tabla: pd.DataFrame) -> dict:
 #         total  ≈ base + ataque_local + ataque_visitante
 #                  + defensa_local + defensa_visitante
 #   - Se usa una ventana móvil (por defecto, las 2 últimas temporadas) y una
-#     pequeña regularización ("rigidez") para que los ratings no se disparen
-#     a principio de temporada.
+#     regularización ("rigidez"; por defecto 8 desde el Bloque 3, validada
+#     walk-forward) que encoge los ratings para que no se disparen a
+#     principio de temporada.
 #   - La evaluación es WALK-FORWARD: cada partido se pronostica solo con lo
 #     sucedido ANTES de él, nunca con su propio resultado (sin trampa).
 # La diferencia entre el pronóstico y la línea del mercado es el "edge".
@@ -595,7 +596,7 @@ class _ModeloPuntos:
     walk-forward de ~7.000 partidos corre en un par de segundos.
     """
 
-    def __init__(self, equipos, ventana=2, rigidez=2.0):
+    def __init__(self, equipos, ventana=2, rigidez=8.0):
         self.equipos = list(equipos)
         self.indice = {equipo: i for i, equipo in enumerate(self.equipos)}
         self.ventana = ventana
@@ -703,7 +704,7 @@ def sigma_actual(df_historicos_con_modelo: pd.DataFrame) -> tuple:
 
 
 def pronosticos_historicos(df_jugados: pd.DataFrame, ventana: int = 2,
-                           rigidez: float = 2.0, minimo_partidos: int = 150) -> pd.DataFrame:
+                           rigidez: float = 8.0, minimo_partidos: int = 150) -> pd.DataFrame:
     """Agrega `margen_modelo`, `total_modelo` y los dos sigmas a los jugados.
 
     Walk-forward: el pronóstico de cada partido usa solo partidos anteriores
@@ -760,7 +761,7 @@ def pronosticos_historicos(df_jugados: pd.DataFrame, ventana: int = 2,
 
 
 def pronosticos_futuros(df_jugados: pd.DataFrame, df_pendientes: pd.DataFrame,
-                        ventana: int = 2, rigidez: float = 2.0) -> pd.DataFrame:
+                        ventana: int = 2, rigidez: float = 8.0) -> pd.DataFrame:
     """Pronostica los partidos pendientes con TODO lo jugado hasta ahora.
 
     Devuelve una copia de `df_pendientes` con `margen_modelo` y `total_modelo`.
@@ -1001,7 +1002,7 @@ def resumen_picks(registro: pd.DataFrame, columna_mercado: str = "mercado") -> p
 # picks anteriores a este sistema no se pueden recuperar: la app los marca
 # como "🧮 Reconstruido" (se recalculan con la línea actual) y solo lo
 # capturado lleva el sello "📌 Capturado".
-VERSION_MODELO = "srs-v1"  # Súbela si cambia el modelo (ventana, rigidez, sigma...)
+VERSION_MODELO = "srs-v2"  # srs-v1 → srs-v2: rigidez 8 (Bloque 3, validada en holdout)
 RUTA_REGISTRO_PICKS = BASE / "registro_picks.csv"
 COLUMNAS_REGISTRO_PICKS = [
     "id", "capturado_en", "temporada", "semana", "game_id", "equipo_local",

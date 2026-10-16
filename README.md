@@ -52,13 +52,15 @@ sin maquillar.
 ## El modelo (sin trampas)
 
 - Estilo **SRS**: cada equipo tiene un *rating* que sale de un sistema lineal
-  sobre los **partidos anteriores** (ventana móvil de 2 temporadas).
+  sobre los **partidos anteriores** (ventana móvil de 2 temporadas y rigidez
+  8 — ratings prudentes; configuración srs-v2 validada con holdout en el
+  Bloque 3 de la auditoría).
 - **Walk-forward**: cada partido se pronostica solo con lo sucedido antes de
   él; el resultado nunca se usa para predecirse a sí mismo.
 - Compara su pronóstico con la línea → el **edge**. Si supera el umbral
   elegido, emite *pick*. Los *push* devuelven el dinero y no cuentan.
 - **Moneyline**: el margen pronosticado se convierte en probabilidad de
-  victoria (normal con el error real del modelo, σ ≈ 13.5 puntos para el
+  victoria (normal con el error real del modelo, σ ≈ 13.4 puntos para el
   margen) y se compara con la cuota del mercado **sin** *vig*; emite pick si
   supera su umbral (en puntos de probabilidad).
 - **σ honesto**: el error del modelo se congela al empezar cada jornada (un
@@ -99,15 +101,16 @@ pip install -r requirements.txt
 .venv/bin/python -m unittest discover -s tests -t .
 ```
 
-Cubren cuotas/vig, la convención del spread, *push*, totales, primetime
-(incluidas las correcciones de 1999–2005), el resumen por temporada, los
-precios entre casas (con datos de laboratorio), el respaldo sin internet,
-las probabilidades y **picks de moneyline**, el **registro de picks**
-(¿pegó?, % de acierto, ROI), el **σ congelado por jornada** (sin fuga dentro
-de la semana, tampoco en los totales), las **métricas de probabilidad**
-(Brier, Log Loss, calibración), el **registro fiel** (congelado al emitir,
-resultado con la línea congelada, sin cuota no hay EV) y que el modelo
-**no vea el futuro**.
+Las 62 pruebas cubren cuotas/vig, la convención del spread, *push*, totales,
+primetime (incluidas las correcciones de 1999–2005), el resumen por
+temporada, los precios entre casas (con datos de laboratorio), el respaldo
+sin internet, las probabilidades y **picks de moneyline**, el **registro de
+picks** (¿pegó?, % de acierto, ROI), el **σ congelado por jornada** (sin fuga
+dentro de la semana, tampoco en los totales), las **métricas de
+probabilidad** (Brier, Log Loss, calibración), el **registro fiel**
+(congelado al emitir, resultado con la línea congelada, sin cuota no hay EV),
+los **parámetros validados del modelo** (srs-v2: defectos ventana 2 / rigidez
+8) y que el modelo **no vea el futuro**.
 
 ## Archivos
 

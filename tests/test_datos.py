@@ -485,6 +485,31 @@ class ModeloDePronosticos(unittest.TestCase):
         fut_raro = datos.pronosticos_futuros(cal, raro)
         self.assertTrue(np.isnan(fut_raro["margen_modelo"].iloc[0]))
 
+    def test_parametros_por_defecto_son_los_del_modelo_validado(self):
+        """Los defectos son los del srs-v2 (ventana 2, rigidez 8): validadas
+        en el Bloque 3 con selección 2006–2017 y holdout 2018–2025."""
+        _, cal = calendario_sintetico()
+        por_defecto = datos.pronosticos_historicos(cal, minimo_partidos=10)
+        explicito = datos.pronosticos_historicos(
+            cal, ventana=2, rigidez=8.0, minimo_partidos=10)
+        np.testing.assert_allclose(
+            por_defecto["margen_modelo"].to_numpy(),
+            explicito["margen_modelo"].to_numpy(),
+            equal_nan=True,
+        )
+        self.assertEqual(datos.VERSION_MODELO, "srs-v2")
+
+    def test_mas_rigidez_encoge_los_pronosticos(self):
+        """Rigidez alta = ratings más prudentes: los pronósticos se acercan
+        al centro en vez de dispararse con poca historia."""
+        _, cal = calendario_sintetico()
+        blando = datos.pronosticos_historicos(cal, rigidez=1.0, minimo_partidos=10)
+        duro = datos.pronosticos_historicos(cal, rigidez=32.0, minimo_partidos=10)
+        self.assertLess(
+            duro["margen_modelo"].abs().max(),
+            blando["margen_modelo"].abs().max(),
+        )
+
 
 class PicksMoneylineYRegistro(unittest.TestCase):
     """Probabilidades del moneyline, picks ML y el registro (¿pegó o no?)."""
