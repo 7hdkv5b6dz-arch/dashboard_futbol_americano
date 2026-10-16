@@ -1,0 +1,20 @@
+# Entorno virtual (no se sube, es enorme y se recrea)
+.venv/
+venv/
+env/
+
+# Caché de datos descargados (se vuelven a bajar solos)
+data/nfl_games.csv
+data/equipos.csv
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+
+# Sistema / editores
+.DS_Store
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/secrets.toml
