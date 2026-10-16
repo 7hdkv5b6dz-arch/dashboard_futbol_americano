@@ -1,0 +1,208 @@
+
+==============================================================================
+INSTRUMENTO DE EVALUACIÓN v3 — modelo srs-v2 — era 2006+
+==============================================================================
+Fecha: 2026-10-16 | semilla bootstrap: 20261016 | remuestreos: 2000
+Solo lectura · sin red · determinista (salvo la línea de tiempo)
+
+==============================================================================
+1. CARGA, SIGMA Y ERA (sanidad)
+==============================================================================
+Partidos: 7548 | jugados: 7356 | pendientes: 192 | temporadas: 1999–2026
+max |sigma réplica − sigma datos.py| = 0.00e+00 (margen) | 0.00e+00 (total)
+sigma margen (último) = 13.35 | sigma total (último) = 13.77
+Era de evaluación (2006+): 5511 partidos jugados
+
+==============================================================================
+2. REPRODUCCIÓN DE LA LÍNEA BASE (picks por defecto y Brier)
+==============================================================================
+Configuración por defecto: spread/total umbral 2.0 · moneyline umbral 4pp
+
+  Spread (umbral 2.0)      n= 3230 push= 87 | acierto= 50.7% ± 0.9 | ROI=  -1.4% ± 1.7 (t=-0.83)
+  Total (umbral 2.0)       n= 3207 push= 40 | acierto= 51.4% ± 0.9 | ROI=  -0.1% ± 1.7 (t=-0.04)
+  Moneyline (umbral 4pp)   n= 3858 push=  8 | acierto= 37.3% ± 0.8 | ROI=  -4.8% ± 2.3 (t=-2.09)
+  Spread: cuota real en 3142/3230 picks (97.3%); ROI solo con cuota real = -1.5%
+  Total: cuota real en 3131/3207 picks (97.6%); ROI solo con cuota real = +0.4%
+  Moneyline: picks 2006=141 (2006 casi sin cuotas ML), 2007=217
+
+Brier/LogLoss — todos los evaluables (convención del reporte):
+conjunto             n   Brier  LogLoss
+----------------  ----  ------  -------
+spread · modelo   5511  0.2607   0.7163
+spread · mercado  5375  0.2501   0.6933
+total · modelo    5432  0.2596   0.7139
+total · mercado   5296  0.2501   0.6934
+ml · modelo       5511  0.2254   0.6417
+ml · mercado      5375  0.2117   0.6108
+
+Brier/LogLoss — sobre los picks emitidos (prob. del lado apostado):
+conjunto             n   Brier  LogLoss
+----------------  ----  ------  -------
+spread · modelo   3143  0.2660   0.7283
+spread · mercado  3058  0.2499   0.6930
+total · modelo    3167  0.2657   0.7273
+total · mercado   3092  0.2502   0.6935
+ml · modelo       3850  0.2270   0.6453
+ml · mercado      3850  0.2081   0.6030
+
+Verificación contra la línea base congelada (16/10/2026):
+  → 62/62 comprobaciones de reproducción OK
+
+==============================================================================
+3. MISMOS PARTIDOS — MODELO vs MERCADO (estricto, IC95% bootstrap)
+==============================================================================
+Conjunto estricto: pronóstico del modelo + probabilidad de mercado +
+resultado decidido; push y empates FUERA para ambos lados.
+Δ = Brier(modelo) − Brier(mercado) sobre los MISMOS partidos; Δ>0 ⇒ peor el modelo.
+
+Mercado       n  Brier mod  Brier mer        Δ  LL mod  LL mer             IC95% Δ                             Veredicto
+---------  ----  ---------  ---------  -------  ------  ------  ------------------  ------------------------------------
+Spread     5236     0.2605     0.2501  +0.0104  0.7160  0.6933  [+0.0074, +0.0133]  el MODELO es peor (IC95% entero > 0)
+Total      5296     0.2594     0.2501  +0.0093  0.7137  0.6934  [+0.0064, +0.0121]  el MODELO es peor (IC95% entero > 0)
+Moneyline  5360     0.2251     0.2114  +0.0137  0.6408  0.6101  [+0.0111, +0.0167]  el MODELO es peor (IC95% entero > 0)
+
+Sensibilidad a la convención del reporte anterior (push/empate = 0):
+  Spread: n=5375, ΔBrier=+0.0108 (vs estricto n=5236, Δ=+0.0104)
+  Total: convención idéntica (los push ya estaban fuera).
+  Moneyline: n=5375, ΔBrier=+0.0136 (vs estricto n=5360, Δ=+0.0137)
+
+==============================================================================
+4. TEMPORADA REGULAR vs POSTEMPORADA
+==============================================================================
+Partidos: regular 5279 | postemporada 232 (4.2% de la era)
+
+Brier estricto por segmento (mismos partidos dentro de cada uno):
+Segmento        Mercado     n  Brier mod  Brier mer        Δ             IC95% Δ                                Veredicto
+------------  ---------  ----  ---------  ---------  -------  ------------------  ---------------------------------------
+Regular          Spread  5010     0.2609     0.2501  +0.0108  [+0.0078, +0.0140]     el MODELO es peor (IC95% entero > 0)
+Regular           Total  5072     0.2595     0.2501  +0.0094  [+0.0062, +0.0125]     el MODELO es peor (IC95% entero > 0)
+Regular       Moneyline  5130     0.2251     0.2111  +0.0141  [+0.0113, +0.0171]     el MODELO es peor (IC95% entero > 0)
+Postemporada     Spread   226     0.2509     0.2498  +0.0011  [-0.0112, +0.0135]  sin diferencia clara (IC95% contiene 0)
+Postemporada      Total   224     0.2581     0.2500  +0.0081  [-0.0056, +0.0230]  sin diferencia clara (IC95% contiene 0)
+Postemporada  Moneyline   230     0.2234     0.2187  +0.0046  [-0.0081, +0.0177]  sin diferencia clara (IC95% contiene 0)
+
+Picks por segmento (n / push / acierto% / ROI%):
+Segmento        Mercado     n  push  acierto%  ROI%
+------------  ---------  ----  ----  --------  ----
+Regular          Spread  3124    84      50.7  -1.5
+Regular           Total  3082    37      51.3  -0.4
+Regular       Moneyline  3699     8      37.4  -5.1
+Postemporada     Spread   106     3      52.4  +2.2
+Postemporada      Total   125     3      54.9  +6.9
+Postemporada  Moneyline   159     0      36.5  +2.6
+
+==============================================================================
+5. CON Y SIN TEMPORADA EN CURSO (2026)
+==============================================================================
+Partidos: ≤2025 5431 | 2026 (en curso) 80 — 2026 es muestra mínima: solo informativo, no decide nada.
+
+ΔBrier estricto sin 2026 (con IC) y en 2026 (punto, informativo):
+Mercado    n ≤2025  Δ ≤2025         IC95% ≤2025  n 2026   Δ 2026
+---------  -------  -------  ------------------  ------  -------
+Spread        5162  +0.0104  [+0.0075, +0.0134]      74  +0.0100
+Total         5216  +0.0092  [+0.0062, +0.0123]      80  +0.0156
+Moneyline     5281  +0.0138  [+0.0110, +0.0167]      79  +0.0022
+
+Picks: aporte de 2026 (ROI%):
+Estrategia     n era  ROI era  n ≤2025  ROI ≤2025  n 2026  ROI 2026
+-------------  -----  -------  -------  ---------  ------  --------
+Spread 2.0      3230     -1.4     3181       -1.3      49      -4.8
+Total 2.0       3207     -0.1     3159       -0.1      48      -0.9
+Moneyline 4pp   3858     -4.8     3800       -4.9      58      +1.8
+
+==============================================================================
+6. ROBUSTEZ DEL ROI (IC95% bootstrap de la ganancia por $1)
+==============================================================================
+  Spread 2.0       n= 3230  ROI=  -1.4%  IC95% [  -4.6,   +2.0]  → sin evidencia de rentabilidad (IC95% contiene 0)
+  Total 2.0        n= 3207  ROI=  -0.1%  IC95% [  -3.3,   +3.3]  → sin evidencia de rentabilidad (IC95% contiene 0)
+  Moneyline 4pp    n= 3858  ROI=  -4.8%  IC95% [  -9.1,   -0.5]  → IC95% < 0 (pérdida con evidencia)
+
+==============================================================================
+7. VERIFICACIÓN INTERNA (particiones, réplica vs producción, red, tiempo)
+==============================================================================
+
+  [OK   ] sigma margen réplica vs datos.py               0.00e+00
+  [OK   ] sigma total réplica vs datos.py                0.00e+00
+  [OK   ] sigma margen último                            13.35
+  [OK   ] sigma total último                             13.77
+  [OK   ] era 2006+ (n partidos)                         5511
+  [OK   ] picks Spread (umbral 2.0) · n                  3230
+  [OK   ] picks Spread (umbral 2.0) · push               87
+  [OK   ] picks Spread (umbral 2.0) · acierto %          50.7
+  [OK   ] picks Spread (umbral 2.0) · ROI %              -1.4
+  [OK   ] picks Spread (umbral 2.0) · t del ROI          -0.83
+  [OK   ] picks Total (umbral 2.0) · n                   3207
+  [OK   ] picks Total (umbral 2.0) · push                40
+  [OK   ] picks Total (umbral 2.0) · acierto %           51.4
+  [OK   ] picks Total (umbral 2.0) · ROI %               -0.1
+  [OK   ] picks Total (umbral 2.0) · t del ROI           -0.04
+  [OK   ] picks Moneyline (umbral 4pp) · n               3858
+  [OK   ] picks Moneyline (umbral 4pp) · push            8
+  [OK   ] picks Moneyline (umbral 4pp) · acierto %       37.3
+  [OK   ] picks Moneyline (umbral 4pp) · ROI %           -4.8
+  [OK   ] picks Moneyline (umbral 4pp) · t del ROI       -2.09
+  [OK   ] spread · picks con cuota real                  3142
+  [OK   ] spread · ROI solo cuota real %                 -1.5
+  [OK   ] total · picks con cuota real                   3131
+  [OK   ] total · ROI solo cuota real %                  +0.4
+  [OK   ] moneyline · picks 2006                         141
+  [OK   ] moneyline · picks 2007                         217
+  [OK   ] Brier juegos spread_modelo · n                 5511
+  [OK   ] Brier juegos spread_modelo · Brier             0.2607
+  [OK   ] Brier juegos spread_modelo · LogLoss           0.7163
+  [OK   ] Brier juegos spread_mercado · n                5375
+  [OK   ] Brier juegos spread_mercado · Brier            0.2501
+  [OK   ] Brier juegos spread_mercado · LogLoss          0.6933
+  [OK   ] Brier juegos total_modelo · n                  5432
+  [OK   ] Brier juegos total_modelo · Brier              0.2596
+  [OK   ] Brier juegos total_modelo · LogLoss            0.7139
+  [OK   ] Brier juegos total_mercado · n                 5296
+  [OK   ] Brier juegos total_mercado · Brier             0.2501
+  [OK   ] Brier juegos total_mercado · LogLoss           0.6934
+  [OK   ] Brier juegos ml_modelo · n                     5511
+  [OK   ] Brier juegos ml_modelo · Brier                 0.2254
+  [OK   ] Brier juegos ml_modelo · LogLoss               0.6417
+  [OK   ] Brier juegos ml_mercado · n                    5375
+  [OK   ] Brier juegos ml_mercado · Brier                0.2117
+  [OK   ] Brier juegos ml_mercado · LogLoss              0.6108
+  [OK   ] Brier picks spread_modelo · n                  3143
+  [OK   ] Brier picks spread_modelo · Brier              0.2660
+  [OK   ] Brier picks spread_modelo · LogLoss            0.7283
+  [OK   ] Brier picks spread_mercado · n                 3058
+  [OK   ] Brier picks spread_mercado · Brier             0.2499
+  [OK   ] Brier picks spread_mercado · LogLoss           0.6930
+  [OK   ] Brier picks total_modelo · n                   3167
+  [OK   ] Brier picks total_modelo · Brier               0.2657
+  [OK   ] Brier picks total_modelo · LogLoss             0.7273
+  [OK   ] Brier picks total_mercado · n                  3092
+  [OK   ] Brier picks total_mercado · Brier              0.2502
+  [OK   ] Brier picks total_mercado · LogLoss            0.6935
+  [OK   ] Brier picks ml_modelo · n                      3850
+  [OK   ] Brier picks ml_modelo · Brier                  0.2270
+  [OK   ] Brier picks ml_modelo · LogLoss                0.6453
+  [OK   ] Brier picks ml_mercado · n                     3850
+  [OK   ] Brier picks ml_mercado · Brier                 0.2081
+  [OK   ] Brier picks ml_mercado · LogLoss               0.6030
+  [OK   ] partición partidos REG+POST                    5511
+  [OK   ] partición estricta REG+POST · Spread           5010+226=5236
+  [OK   ] partición estricta ≤2025 + 2026 · Spread       5162+74=5236
+  [OK   ] partición estricta REG+POST · Total            5072+224=5296
+  [OK   ] partición estricta ≤2025 + 2026 · Total        5216+80=5296
+  [OK   ] partición estricta REG+POST · Moneyline        5130+230=5360
+  [OK   ] partición estricta ≤2025 + 2026 · Moneyline    5281+79=5360
+  [OK   ] réplica vs datos.brier_score · Spread          |0.2605023622 − 0.2605023622| ≤ 1e-12
+  [OK   ] réplica vs datos.log_loss · Spread             |0.7160131093 − 0.7160131093| ≤ 1e-12
+  [OK   ] réplica vs datos.brier_score · Total           |0.2594421178 − 0.2594421178| ≤ 1e-12
+  [OK   ] réplica vs datos.log_loss · Total              |0.7136549970 − 0.7136549970| ≤ 1e-12
+  [OK   ] réplica vs datos.brier_score · Moneyline       |0.2250722169 − 0.2250722169| ≤ 1e-12
+  [OK   ] réplica vs datos.log_loss · Moneyline          |0.6408437891 − 0.6408437891| ≤ 1e-12
+  [OK   ] sin intentos de red                            0 intentos
+  [OK   ] tiempo de ejecución < 10 s                     0.62 s (dentro del cálculo)
+
+==============================================================================
+8. VEREDICTO
+==============================================================================
+INSTRUMENTO VÁLIDO: 77/77 comprobaciones OK.
+La línea base queda reproducida al medio dígito impreso y las particiones cuadran.
+Uso permitido como instrumento de medición (fases siguientes).
+Tiempo total: 0.62 s. Ningún archivo del proyecto fue escrito.

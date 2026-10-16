@@ -1,0 +1,133 @@
+
+==============================================================================
+CALIBRACIÓN WALK-FORWARD (F4) — modelo srs-v2 — era 2006+
+==============================================================================
+Fecha: 2026-10-16 | semilla bootstrap: 20261016 | remuestreos: 2000
+Pre-registro: lab/pre_registro_calibracion.md (sha1 61617cbbc815)
+Evaluación: temporadas 2014–2025 | 2026 = informativo | solo lectura · sin red
+
+==============================================================================
+1. UNIVERSO (era 2006+, convención estricta del instrumento)
+==============================================================================
+Mercado    n universo  ajuste inicial ≤2013  eval 2014–2025  sin cuota en eval  2026 (info)
+---------  ----------  --------------------  --------------  -----------------  -----------
+Spread           5236                  1949            3213          1 de 3214           74
+Total            5296                  1953            3263          1 de 3264           80
+Moneyline        5360                  1998            3283          1 de 3284           79
+
+Puertas pre-registradas: G1 ΔBrier≤−0.001 y IC95% sup.<0 · G2 ΔLogLoss≤−0.001 y IC95% sup.<0 ·
+G3 cobertura≥98% · G5 mejora en ≥⌈2/3⌉ de temporadas evaluadas (y ≥5 temporadas) ·
+desempate entre aprobados: mejor ΔBrier; a ≤0.0001, menos parámetros (C1 antes que D; D antes que C2).
+
+==============================================================================
+2. RESULTADOS POR MERCADO (walk-forward; Δ pareado con IC95%)
+==============================================================================
+
+--- Mercado: Spread ---
+Candidato      n   Brier  LogLoss   ΔBrier        IC95% ΔBrier      ΔLL           IC95% ΔLL
+----------  ----  ------  -------  -------  ------------------  -------  ------------------
+A crudo     3213  0.2607   0.7164        —                   —        —                   —
+B mercado   3213  0.2500   0.6932  -0.0106  [-0.0147, -0.0065]  -0.0232  [-0.0314, -0.0146]
+C1 Platt    3213  0.2499   0.6930  -0.0108  [-0.0144, -0.0072]  -0.0234  [-0.0310, -0.0161]
+C2 Isótona  1917  0.2515   0.6963  -0.0119  [-0.0162, -0.0076]  -0.0261  [-0.0348, -0.0171]
+D mezcla    3213  0.2499   0.6930  -0.0107  [-0.0143, -0.0073]  -0.0234  [-0.0312, -0.0160]
+Candidato   Cobertura  Temp. mejor  G1  G2  G3  G5  Veredicto
+----------  ---------  -----------  --  --  --  --  ---------
+C1 Platt       100.0%        11/12  sí  sí  sí  sí  ADOPTABLE
+C2 Isótona     100.0%          7/7  sí  sí  sí  sí  ADOPTABLE
+D mezcla       100.0%        11/12  sí  sí  sí  sí  ADOPTABLE
+D vs B (ΔBrier = D − mercado): -0.0001 IC95% [-0.0009, +0.0007] → sin evidencia de que el modelo añada sobre el mercado (IC95% contiene 0)
+Parámetros última ventana (2006–2025): Platt a=-0.044 b=0.064 | Mezcla a=-0.044 b1=0.061 b2=0.268
+2026 (informativo, n pequeño):
+Candidato    n   Brier  ΔBrier vs A
+----------  --  ------  -----------
+A crudo     74  0.2586            —
+B mercado   74  0.2486      -0.0100
+C1 Platt    74  0.2493      -0.0093
+C2 Isótona  74  0.2467      -0.0119
+D mezcla    74  0.2489      -0.0097
+
+--- Mercado: Total ---
+Candidato      n   Brier  LogLoss   ΔBrier        IC95% ΔBrier      ΔLL           IC95% ΔLL
+----------  ----  ------  -------  -------  ------------------  -------  ------------------
+A crudo     3263  0.2621   0.7193        —                   —        —                   —
+B mercado   3263  0.2500   0.6931  -0.0121  [-0.0157, -0.0087]  -0.0262  [-0.0343, -0.0185]
+C1 Platt    3263  0.2507   0.6945  -0.0114  [-0.0146, -0.0082]  -0.0248  [-0.0320, -0.0174]
+C2 Isótona  2205  0.2517   0.7081  -0.0096  [-0.0134, -0.0059]  -0.0093  [-0.0249, +0.0100]
+D mezcla    3263  0.2508   0.6947  -0.0113  [-0.0148, -0.0080]  -0.0246  [-0.0317, -0.0175]
+Candidato   Cobertura  Temp. mejor  G1  G2  G3  G5  Veredicto
+----------  ---------  -----------  --  --  --  --  ---------
+C1 Platt       100.0%        12/12  sí  sí  sí  sí  ADOPTABLE
+C2 Isótona     100.0%          8/8  sí  no  sí  sí    no pasa
+D mezcla       100.0%        12/12  sí  sí  sí  sí  ADOPTABLE
+D vs B (ΔBrier = D − mercado): +0.0008 IC95% [+0.0001, +0.0015] → D es peor que el mercado (IC95% > 0)
+Parámetros última ventana (2006–2025): Platt a=-0.010 b=0.062 | Mezcla a=-0.011 b1=0.062 b2=0.113
+2026 (informativo, n pequeño):
+Candidato    n   Brier  ΔBrier vs A
+----------  --  ------  -----------
+A crudo     80  0.2659            —
+B mercado   80  0.2503      -0.0156
+C1 Platt    80  0.2503      -0.0156
+C2 Isótona  80  0.2489      -0.0170
+D mezcla    80  0.2503      -0.0156
+
+--- Mercado: Moneyline ---
+Candidato      n   Brier  LogLoss   ΔBrier        IC95% ΔBrier      ΔLL           IC95% ΔLL
+----------  ----  ------  -------  -------  ------------------  -------  ------------------
+A crudo     3283  0.2253   0.6415        —                   —        —                   —
+B mercado   3283  0.2118   0.6111  -0.0135  [-0.0170, -0.0097]  -0.0304  [-0.0384, -0.0226]
+C1 Platt    3283  0.2254   0.6418  +0.0001  [-0.0002, +0.0004]  +0.0003  [-0.0003, +0.0009]
+C2 Isótona  2219  0.2281   0.6625  +0.0010  [-0.0000, +0.0020]  +0.0169  [+0.0010, +0.0383]
+D mezcla    3283  0.2118   0.6113  -0.0135  [-0.0171, -0.0098]  -0.0302  [-0.0383, -0.0226]
+Candidato   Cobertura  Temp. mejor  G1  G2  G3  G5  Veredicto
+----------  ---------  -----------  --  --  --  --  ---------
+C1 Platt       100.0%         6/12  no  no  sí  no    no pasa
+C2 Isótona     100.0%          2/8  no  no  sí  no    no pasa
+D mezcla       100.0%        12/12  sí  sí  sí  sí  ADOPTABLE
+D vs B (ΔBrier = D − mercado): +0.0000 IC95% [-0.0003, +0.0004] → sin evidencia de que el modelo añada sobre el mercado (IC95% contiene 0)
+Parámetros última ventana (2006–2025): Platt a=+0.024 b=0.958 | Mezcla a=-0.048 b1=0.006 b2=1.031
+2026 (informativo, n pequeño):
+Candidato    n   Brier  ΔBrier vs A
+----------  --  ------  -----------
+A crudo     79  0.2325            —
+B mercado   79  0.2303      -0.0022
+C1 Platt    79  0.2324      -0.0000
+C2 Isótona  79  0.2353      +0.0028
+D mezcla    79  0.2303      -0.0021
+
+==============================================================================
+3. VERIFICACIÓN INTERNA
+==============================================================================
+
+  [OK   ] A reproduce datos.brier_score · Spread       |0.2606613046 − 0.2606613046| ≤ 1e-12
+  [OK   ] cobertura A · Spread                         100.0%
+  [OK   ] cobertura C1 · Spread                        100.0%
+  [OK   ] cobertura D · Spread                         100.0%
+  [OK   ] Platt converge · Spread                      a=-0.044 b=0.064
+  [OK   ] A reproduce datos.brier_score · Total        |0.2620921507 − 0.2620921507| ≤ 1e-12
+  [OK   ] cobertura A · Total                          100.0%
+  [OK   ] cobertura C1 · Total                         100.0%
+  [OK   ] cobertura D · Total                          100.0%
+  [OK   ] Platt converge · Total                       a=-0.010 b=0.062
+  [OK   ] A reproduce datos.brier_score · Moneyline    |0.2252543158 − 0.2252543158| ≤ 1e-12
+  [OK   ] cobertura A · Moneyline                      100.0%
+  [OK   ] cobertura C1 · Moneyline                     100.0%
+  [OK   ] cobertura D · Moneyline                      100.0%
+  [OK   ] Platt converge · Moneyline                   a=+0.024 b=0.958
+  [OK   ] partición por temporadas · Spread            1949+3213+74=5236
+  [OK   ] partición por temporadas · Total             1953+3263+80=5296
+  [OK   ] partición por temporadas · Moneyline         1998+3283+79=5360
+  [OK   ] sin intentos de red                          0 intentos
+  [OK   ] tiempo de ejecución < 10 s                   0.68 s (dentro del cálculo)
+
+==============================================================================
+4. VEREDICTO F4 (puertas pre-registradas)
+==============================================================================
+  Spread: ADOPTAR C2 Isótona — ΔBrier -0.0119 IC95% [-0.0162, -0.0076]; ΔLogLoss -0.0261 IC95% [-0.0348, -0.0171]; cobertura 100.0%; temporadas mejor 7/7
+  Total: ADOPTAR C1 Platt — ΔBrier -0.0114 IC95% [-0.0146, -0.0082]; ΔLogLoss -0.0248 IC95% [-0.0320, -0.0174]; cobertura 100.0%; temporadas mejor 12/12
+  Moneyline: ADOPTAR D mezcla — ΔBrier -0.0135 IC95% [-0.0171, -0.0098]; ΔLogLoss -0.0302 IC95% [-0.0383, -0.0226]; cobertura 100.0%; temporadas mejor 12/12
+
+Recordatorio: 2014–2025 es retrospectivo y está contaminado en grado variable;
+la adopción real (cableado en la app) será un bloque aparte con sus pruebas.
+Tiempo total: 0.68 s. Ningún archivo del proyecto fue escrito.
+Comprobaciones internas: 20/20 OK.
