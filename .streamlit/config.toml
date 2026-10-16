@@ -1,0 +1,14 @@
+# Tema visual del dashboard. Streamlit lo carga solito al arrancar.
+# Fondo azul noche + verde césped: se ve igual en local y en Streamlit Cloud.
+[theme]
+base = "dark"
+primaryColor = "#00C46A"
+backgroundColor = "#0B1220"
+secondaryBackgroundColor = "#151E2E"
+textColor = "#E7EBF3"
+linkColor = "#8AE6B9"
+font = "sans serif"
+
+# Sin telemetría de uso (privacidad)
+[browser]
+gatherUsageStats = false

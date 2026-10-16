@@ -16,5 +16,8 @@ __pycache__/
 .vscode/
 .idea/
 
+# Herramientas de IA (no son parte del proyecto)
+.agents/
+
 # Streamlit
 .streamlit/secrets.toml

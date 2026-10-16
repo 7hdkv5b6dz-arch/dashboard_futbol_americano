@@ -1,36 +1,287 @@
 """
-Dashboard de Estadísticas — Fútbol Americano (datos REALES)
-==========================================================
+Dashboard de Apuestas NFL — análisis con datos REALES
+======================================================
 
-Proyecto educativo. Analiza datos deportivos reales (nflverse); NO predice
-apuestas ni promete ganarle al casino (eso es imposible, se explica en la app).
+Análisis de apuestas deportivas con datos reales de nflverse: mercado
+(spread, totales, vig), rendimiento ATS por equipo, totales y clima,
+números clave y un MODELO de pronósticos walk-forward (entrena solo con
+el pasado, nunca con el resultado que intenta predecir) cuyo historial
+completo se muestra sin maquillar.
+
+Aviso honesto: el mercado de la NFL es casi perfecto y la casa cobra el
+vig. Nada de lo que hay aquí garantiza ganar dinero. +18. Juego responsable.
 
 Cómo se corre (NO dentro de Thonny, es una app web):
     source .venv/bin/activate
     streamlit run app.py
+
+Diseño: el tema oscuro (fondo azul noche + verde césped) está en
+`.streamlit/config.toml`; los detalles finos (tipografía, chips, tarjetas,
+pestañas y ajustes para móvil) están en ESTILO_CSS, y las gráficas comparten
+el estilo de `estilo_grafica()` para verse consistentes.
 """
 
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 import datos
 
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Dashboard Fútbol Americano", page_icon="🏈", layout="wide")
-st.title("🏈 Dashboard de Fútbol Americano")
-st.caption(
-    "Datos REALES de nflverse (resultados, líneas de apuestas y horarios). "
-    "Proyecto educativo: analiza datos, no apuesta."
+st.set_page_config(
+    page_title="Apuestas NFL — datos reales",
+    page_icon="🏈",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
+
+# Estilos propios. El tema base está en .streamlit/config.toml; aquí van los
+# detalles: encabezado, "chips" informativos, tarjetas de métricas, tablas,
+# pestañas y un ajuste especial para pantallas angostas (móvil).
+ESTILO_CSS = """
+<style>
+/* --- Ajustes generales --- */
+.block-container { padding-top: 2.2rem; padding-bottom: 3rem; }
+h1 { letter-spacing: -0.02em; font-size: clamp(1.7rem, 4vw, 2.5rem) !important; }
+h2, h3 { letter-spacing: -0.01em; }
+[data-testid="stCaptionContainer"] { opacity: 0.8; }
+
+/* --- Chips informativos del encabezado --- */
+.chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.15rem 0 0.6rem; }
+.chips span {
+  background: rgba(0, 196, 106, 0.10);
+  border: 1px solid rgba(0, 196, 106, 0.28);
+  color: #A9EFC9;
+  border-radius: 999px;
+  padding: 0.12rem 0.65rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+/* --- Tarjetas de métricas --- */
+[data-testid="stMetricValue"] { font-size: clamp(1.25rem, 3vw, 1.85rem); }
+
+/* --- Pestañas --- */
+.stTabs [data-baseweb="tab-list"] { gap: 0.3rem; }
+.stTabs [data-baseweb="tab"] { padding: 0.45rem 0.9rem; border-radius: 10px 10px 0 0; }
+.stTabs [aria-selected="true"] { background: rgba(0, 196, 106, 0.10); }
+
+/* --- Tablas --- */
+[data-testid="stDataFrame"] {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* --- Avisos --- */
+[data-testid="stAlert"] { border-radius: 12px; }
+
+/* --- Móvil: menos relleno y letras legibles en pantallas angostas --- */
+@media (max-width: 640px) {
+  .block-container { padding-left: 0.9rem; padding-right: 0.9rem; }
+  [data-testid="stMetricValue"] { font-size: 1.30rem; }
+  .stTabs [data-baseweb="tab"] { padding: 0.4rem 0.55rem; font-size: 0.85rem; }
+  .chips span { font-size: 0.72rem; }
+}
+</style>
+"""
+st.markdown(ESTILO_CSS, unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Gráficas: estilo común
+# ---------------------------------------------------------------------------
+def estilo_grafica(fig, alto=430):
+    """Aplica el estilo visual común: fondo transparente, fuente y márgenes.
+
+    `mostrar_grafica()` usa theme=None para que Streamlit NO pise estos
+    ajustes (si no, cada gráfica saldría con colores distintos).
+    """
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=alto,
+        margin=dict(l=12, r=12, t=58, b=12),
+        title=dict(x=0.01, xanchor="left", font=dict(size=16)),
+        font=dict(size=13),
+        hoverlabel=dict(font_size=13),
+        # Paleta base: verde césped, azul, amarillo luna, coral y lila
+        colorway=["#00C46A", "#4C9AFF", "#F2C14E", "#FF6B6B", "#B48EFF"],
+    )
+    fig.update_xaxes(gridcolor="rgba(255,255,255,.07)", zeroline=False)
+    fig.update_yaxes(gridcolor="rgba(255,255,255,.07)", zeroline=False)
+    return fig
+
+
+def mostrar_grafica(fig, alto=430):
+    """Estiliza la figura y la dibuja (sin barra de herramientas: mejor en móvil)."""
+    st.plotly_chart(
+        estilo_grafica(fig, alto),
+        width="stretch",
+        theme=None,
+        config={"displayModeBar": False, "responsive": True},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Apuestas: pequeños cálculos compartidos
+# ---------------------------------------------------------------------------
+def cuota_a_pago(cuotas):
+    """Cuota americana (-110, +145...) → pago por cada $1 (sin devolver el $)."""
+    c = pd.to_numeric(cuotas, errors="coerce").fillna(-110)
+    return (c / 100).where(c > 0, 100 / -c)
+
+
+def ganancia_apuesta(cuotas, gano):
+    """$ ganados/perdidos por cada $1 apostado, según la cuota americana.
+
+    Donde no hay cuota (antes de 2006) se asume la cuota estándar -110.
+    Quien llama ya debe haber quitado los push (apuesta nula, devuelve $).
+    """
+    gano_f = pd.Series(gano, index=pd.Series(cuotas).index).astype("boolean").fillna(False)
+    return cuota_a_pago(cuotas).where(gano_f.astype(bool), -1.0)
+
+
+def evaluar_spread(df, umbral):
+    """Picks del modelo contra el spread, ya calificados.
+
+    Elige el lado (local con `edge > 0`, visitante con `edge < 0`) cuando la
+    ventaja estimada llega al `umbral`. Los push quedan como apuesta nula
+    (ganancia $0, no cuentan como acierto).
+    """
+    d = df[df["margen_modelo"].notna() & df["spread_line"].notna()].copy()
+    d["edge"] = d["margen_modelo"] - d["spread_line"]
+    d = d[d["edge"].abs() >= umbral].copy()
+    d["al_local"] = d["edge"] > 0
+    d["pick"] = d["home_team"].where(d["al_local"], d["away_team"])
+    d["linea_pick"] = np.where(d["al_local"], -d["spread_line"], d["spread_line"])
+    d["gano"] = d["cubre_local"].where(d["al_local"], d["cubre_visitante"])
+    d["gano"] = d["gano"].mask(d["push_spread"].fillna(False))  # push: sin juicio
+    d["cuota"] = d["home_spread_odds"].where(d["al_local"], d["away_spread_odds"])
+    d["ganancia"] = ganancia_apuesta(d["cuota"], d["gano"]).where(d["gano"].notna(), 0.0)
+    return d
+
+
+def evaluar_totales(df, umbral):
+    """Picks del modelo en el total (más/menos), ya calificados."""
+    d = df[df["total_modelo"].notna() & df["total_line"].notna()].copy()
+    d["edge"] = d["total_modelo"] - d["total_line"]
+    d = d[d["edge"].abs() >= umbral].copy()
+    d["al_over"] = d["edge"] > 0
+    d["pick"] = np.where(d["al_over"], "Más de " + d["total_line"].astype(str),
+                         "Menos de " + d["total_line"].astype(str))
+    d["gano"] = d["over"].where(d["al_over"], ~d["over"])
+    d["cuota"] = d["over_odds"].where(d["al_over"], d["under_odds"])
+    d["ganancia"] = ganancia_apuesta(d["cuota"], d["gano"]).where(d["gano"].notna(), 0.0)
+    return d
+
+
+def metricas_picks(picks):
+    """(nº de apuestas, % de acierto sin push, ROI % por $1)."""
+    if not len(picks):
+        return 0, float("nan"), float("nan")
+    acierto = picks["gano"].mean()  # mean ya descarta los push (NA)
+    acierto = float(acierto) if pd.notna(acierto) else float("nan")
+    roi = float(picks["ganancia"].mean()) * 100
+    return len(picks), acierto * 100, roi
+
+
+def etiqueta_pick(equipo, linea):
+    """«Chiefs -3.5» — la línea desde el punto de vista del equipo elegido."""
+    return f"{APODOS.get(equipo, equipo)} {linea:+.1f}"
+
+
+def nivel_confianza(edge_abs):
+    """Etiqueta informativa por tamaño del edge (no es una promesa)."""
+    if edge_abs >= 4.5:
+        return "Muy alta"
+    if edge_abs >= 3.0:
+        return "Alta"
+    return "Normal"
+
+
+def registros_ats(df):
+    """Récord ATS por equipo (desde la perspectiva de su propia línea)."""
+    d = df[df["spread_line"].notna() & df["margen"].notna()]
+    filas = []
+    for local, visitante, margen, linea in d[
+        ["home_team", "away_team", "margen", "spread_line"]
+    ].itertuples(index=False, name=None):
+        if margen > linea:
+            filas += [(local, 1), (visitante, -1)]
+        elif margen < linea:
+            filas += [(local, -1), (visitante, 1)]
+        else:
+            filas += [(local, 0), (visitante, 0)]
+    t = pd.DataFrame(filas, columns=["equipo", "valor"])
+    res = t.groupby("equipo")["valor"].agg(
+        cubiertas=lambda s: int((s == 1).sum()),
+        falladas=lambda s: int((s == -1).sum()),
+        pushes=lambda s: int((s == 0).sum()),
+    ).reset_index()
+    res["decididas"] = res["cubiertas"] + res["falladas"]
+    res["pct"] = (res["cubiertas"] / res["decididas"].replace(0, np.nan) * 100).round(1)
+    res["apodo"] = res["equipo"].map(lambda e: APODOS.get(e, e))
+    return res
+
+
+def matriz_ats(df):
+    """Matriz equipo × semana para el mapa de calor ATS.
+
+    Valor: +1 cubrió, 0 push, -1 no cubrió (NaN = no jugó). Devuelve además
+    el texto de cada celda (rival y marcador) para el hover.
+    """
+    d = df[df["spread_line"].notna() & df["margen"].notna()]
+    valores, textos = [], []
+    for semana, local, visitante, margen, linea in d[
+        ["week", "home_team", "away_team", "margen", "spread_line"]
+    ].itertuples(index=False, name=None):
+        marcador = f"{int(margen):+d}"
+        if margen > linea:
+            vl, vv = 1, -1
+        elif margen < linea:
+            vl, vv = -1, 1
+        else:
+            vl, vv = 0, 0
+        valores += [(local, semana, vl), (visitante, semana, vv)]
+        textos += [
+            (local, semana, f"vs {APODOS.get(visitante, visitante)} · {marcador}"),
+            (visitante, semana, f"en {APODOS.get(local, local)} · {-int(margen):+d}"),
+        ]
+    zv = (pd.DataFrame(valores, columns=["equipo", "semana", "valor"])
+          .pivot_table(index="equipo", columns="semana", values="valor", aggfunc="first"))
+    zt = (pd.DataFrame(textos, columns=["equipo", "semana", "texto"])
+          .pivot_table(index="equipo", columns="semana", values="texto", aggfunc="first"))
+    return zv, zt
+
+
+def totales_por_equipo(df):
+    """% de overs de cada equipo (sin contar push ni partidos sin línea)."""
+    d = df[df["over"].notna()]
+    filas = []
+    for local, visitante, over in d[
+        ["home_team", "away_team", "over"]
+    ].itertuples(index=False, name=None):
+        filas += [(local, bool(over)), (visitante, bool(over))]
+    t = pd.DataFrame(filas, columns=["equipo", "over"])
+    res = t.groupby("equipo")["over"].agg(overs="sum", n="size").reset_index()
+    res["pct"] = (res["overs"] / res["n"] * 100).round(1)
+    res["apodo"] = res["equipo"].map(lambda e: APODOS.get(e, e))
+    return res
 
 
 # ---------------------------------------------------------------------------
 # DATOS
 # ---------------------------------------------------------------------------
-@st.cache_data(show_spinner="Descargando datos reales de nflverse...")
-def traer_datos():
-    return datos.cargar_partidos()
+@st.cache_data(show_spinner="Descargando datos reales de nflverse (resultados, líneas y clima)...")
+def traer_calendario():
+    return datos.cargar_calendario()
 
 
 @st.cache_data
@@ -38,10 +289,29 @@ def traer_equipos():
     return datos.cargar_equipos()
 
 
-partidos = traer_datos()
+@st.cache_data(show_spinner="Calculando el modelo walk-forward (entrena solo con el pasado)...")
+def traer_pronosticos_historicos():
+    return datos.pronosticos_historicos(traer_calendario())
+
+
+@st.cache_data(show_spinner="Pronosticando la jornada pendiente...")
+def traer_pronosticos_futuros():
+    calendario = traer_calendario()
+    pendientes = calendario[~calendario["jugado"] & calendario["spread_line"].notna()]
+    return datos.pronosticos_futuros(calendario, pendientes)
+
+
+calendario = traer_calendario()
 equipos = traer_equipos()
 NOMBRES = datos.mapa_nombres(equipos)
+APODOS = datos.mapa_apodos(equipos)
 COLORES = datos.mapa_colores(equipos)
+
+partidos = calendario[calendario["jugado"]].copy()
+proximos = calendario[~calendario["jugado"] & calendario["spread_line"].notna()].copy()
+
+hist_picks = traer_pronosticos_historicos()
+picks_futuros = traer_pronosticos_futuros()
 
 
 def color_equipos(valores):
@@ -49,13 +319,56 @@ def color_equipos(valores):
     return [COLORES.get(v, "#888888") for v in valores]
 
 
+def fecha_de_datos():
+    """Fecha de la última descarga del CSV de partidos (frescura de líneas)."""
+    ruta = Path(datos.BASE) / "nfl_games.csv"
+    if ruta.exists():
+        return datetime.fromtimestamp(ruta.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
+    return "sin archivo local"
+
+
+# ---------------------------------------------------------------------------
+# ENCABEZADO
+# ---------------------------------------------------------------------------
+st.title("🏈 Apuestas NFL — análisis con datos reales")
+st.caption(
+    "Mercado (spread, totales, vig), ATS por equipo, clima, números clave y un "
+    "**modelo de pronósticos walk-forward** con su historial completo. "
+    "Datos públicos de nflverse. Nada de esto garantiza ganar: el mercado es "
+    "casi perfecto (mira la pestaña 💰)."
+)
+
+rango_temporadas = (
+    f"🗓️ Temporadas {int(partidos['season'].min())}–{int(partidos['season'].max())}"
+    if len(partidos)
+    else "🗓️ Datos de ejemplo (sin conexión)"
+)
+st.markdown(
+    f'<div class="chips">'
+    f'<span>📡 Datos reales · nflverse</span>'
+    f'<span>{rango_temporadas}</span>'
+    f'<span>🎯 Modelo sin ver el futuro</span>'
+    f'<span>🌙 Primetime verificado</span>'
+    f'<span>🔞 +18 · Juego responsable</span>'
+    f"</div>",
+    unsafe_allow_html=True,
+)
+
+
 # ---------------------------------------------------------------------------
 # FILTROS (barra lateral)
 # ---------------------------------------------------------------------------
 st.sidebar.header("Filtros")
 
-temporadas = sorted(partidos["season"].unique(), reverse=True)
-temporadas = [t for t in temporadas if t > 0][:10]
+temporadas = sorted((t for t in partidos["season"].unique() if t > 0), reverse=True)
+temporadas = temporadas[:10]
+if not temporadas:
+    st.error(
+        "No hay datos de partidos todavía. Comprueba tu conexión y pulsa "
+        "«🔄 Actualizar líneas» en la barra lateral."
+    )
+    st.stop()
+
 temporada_sel = st.sidebar.selectbox("Temporada", temporadas, index=0)
 
 df_temp = partidos[partidos["season"] == temporada_sel]
@@ -78,219 +391,1089 @@ else:
 
 st.sidebar.caption(f"Partidos: {len(df_vista)}")
 st.sidebar.markdown("---")
+
+if st.sidebar.button("🔄 Actualizar líneas", help="Vuelve a descargar los datos de nflverse."):
+    datos.actualizar_datos()
+    st.cache_data.clear()
+    st.rerun()
+st.sidebar.caption(f"Datos descargados: {fecha_de_datos()}")
+
 st.sidebar.caption("Fuente: [nflverse](https://github.com/nflverse/nflverse-data)")
+with st.sidebar.expander("ℹ️ Acerca de"):
+    st.markdown(
+        "Dashboard de **análisis de apuestas** con datos reales de la NFL. "
+        "El modelo de pronósticos entrena **solo con partidos anteriores** y "
+        "su historial se muestra tal cual, con temporadas ganadoras y perdedoras. "
+        "El mercado de la NFL es casi perfecto: trátalo con escepticismo."
+    )
+st.sidebar.caption(
+    "🔞 Solo para mayores de 18. Si el juego deja de ser diversión: "
+    "**1-800-522-4700** (EE. UU.) · **900 200 225** (España). "
+    "Nunca apuestes dinero que no puedas permitirte perder."
+)
 
 
 # ---------------------------------------------------------------------------
-# MÉTRICAS
+# MÉTRICAS (según los filtros)
 # ---------------------------------------------------------------------------
-ud_vista = df_vista[df_vista["hay_underdog"]]
-pct_ud = ud_vista["gano_underdog"].mean() * 100 if len(ud_vista) else float("nan")
+decididas = df_vista[df_vista["cubre_favorito"].notna()]
+con_total = df_vista[df_vista["over"].notna()]
+
+pct_fav = decididas["cubre_favorito"].mean() * 100 if len(decididas) else float("nan")
+pct_over = con_total["over"].mean() * 100 if len(con_total) else float("nan")
+
+cuota_ciego = df_vista["home_spread_odds"].where(df_vista["favorito_local"], df_vista["away_spread_odds"])
+roi_ciego_vista = (
+    float(ganancia_apuesta(cuota_ciego[decididas.index], decididas["cubre_favorito"]).mean()) * 100
+    if len(decididas) else float("nan")
+)
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Partidos", len(df_vista))
+c1.metric(
+    "Partidos", len(df_vista), border=True,
+    help="Partidos jugados que cumplen los filtros de la barra lateral.",
+)
 c2.metric(
-    "Puntos por partido",
-    f"{df_vista['total_puntos'].mean():.1f}" if len(df_vista) else "—",
+    "Favoritos cubren la línea",
+    f"{pct_fav:.1f}%" if len(decididas) else "—",
+    border=True,
+    help="De los partidos con línea clara (sin push ni pick'em). Si el mercado "
+         "fuera perfecto: 50%.",
 )
-c3.metric("Underdogs que ganaron", f"{pct_ud:.1f}%" if len(ud_vista) else "—")
+c3.metric(
+    "Overs del total",
+    f"{pct_over:.1f}%" if len(con_total) else "—",
+    border=True,
+    help="Partidos en que la suma de puntos superó la línea del total (sin push).",
+)
 c4.metric(
-    "Local vs visitante",
-    f"{df_vista['home_score'].mean():.1f} - {df_vista['away_score'].mean():.1f}"
-    if len(df_vista)
-    else "—",
+    "ROI a ciegas (favoritos)",
+    f"{roi_ciego_vista:+.1f}%" if len(decididas) else "—",
+    border=True,
+    help="Resultado por cada $1 apostado SIEMPRE al favorito contra el spread, "
+         "en los partidos filtrados. Negativo = la casa gana, como esperarías.",
 )
 
-tab1, tab2, tab3 = st.tabs(["📊 Equipos y partidos", "🐶 Underdogs y tendencias", "📚 Educación"])
+tab_picks, tab_ats, tab_totales, tab_clave, tab_mercado = st.tabs([
+    "🎯 Picks del modelo",
+    "📈 ATS por equipo",
+    "🎲 Totales y clima",
+    "🧮 Números clave",
+    "💰 Mercado y vig",
+])
+
+# Días de la semana en español (para las tablas de partidos)
+DIAS_ES = {
+    "Sunday": "Domingo", "Monday": "Lunes", "Tuesday": "Martes",
+    "Wednesday": "Miércoles", "Thursday": "Jueves", "Friday": "Viernes",
+    "Saturday": "Sábado",
+}
 
 
 # ===========================================================================
-# TAB 1 — EQUIPOS Y PARTIDOS
+# TAB 1 — PICKS DEL MODELO
 # ===========================================================================
-with tab1:
-    st.subheader("📅 Partidos")
-    cols_mostrar = ["week", "weekday", "gametime", "away_team", "home_team",
-                    "away_score", "home_score", "spread_line", "primetime"]
-    cols_mostrar = [c for c in cols_mostrar if c in df_vista.columns]
-    st.dataframe(df_vista[cols_mostrar], width="stretch", hide_index=True)
+with tab_picks:
+    st.header("🎯 Picks del modelo")
 
-    # --- Resumen por equipo ---
-    def partidos_por_equipo(datos_df):
-        filas = []
-        for _, g in datos_df.iterrows():
-            filas.append({"equipo": g["home_team"], "favor": g["home_score"],
-                          "contra": g["away_score"]})
-            filas.append({"equipo": g["away_team"], "favor": g["away_score"],
-                          "contra": g["home_score"]})
-        d = pd.DataFrame(filas)
-        d["victoria"] = d["favor"] > d["contra"]
-        return d
-
-    det = partidos_por_equipo(df_vista)
-    resumen = (det.groupby("equipo")
-               .agg(partidos=("favor", "size"), victorias=("victoria", "sum"),
-                    prom_favor=("favor", "mean"), prom_contra=("contra", "mean"))
-               .reset_index())
-    resumen["prom_favor"] = resumen["prom_favor"].round(1)
-    resumen["prom_contra"] = resumen["prom_contra"].round(1)
-    resumen["nombre"] = resumen["equipo"].map(lambda e: datos.con_nombre(e, NOMBRES))
-    resumen = resumen.sort_values("victorias", ascending=False)
-
-    st.subheader("🏆 Resumen por equipo")
-    st.dataframe(
-        resumen[["nombre", "partidos", "victorias", "prom_favor", "prom_contra"]],
-        width="stretch", hide_index=True,
+    st.warning(
+        "**Lee esto antes que nada.** Estos pronósticos salen de un modelo "
+        "simple (ratings por puntos, estilo SRS) construido con datos públicos. "
+        "El mercado de la NFL es extremadamente eficiente: incluso modelos "
+        "profesionales rara vez ganan de forma sostenida después del *vig*. "
+        "Abajo tienes el historial real y sin trampa — incluye temporadas en "
+        "las que el modelo **pierde dinero**. Esto es material educativo, no "
+        "un consejo de inversión. 🔞 Juega solo lo que puedas permitirte perder."
     )
 
-    izq, der = st.columns(2)
-    with izq:
-        r = resumen.sort_values("prom_favor")
-        fig = px.bar(r, x="prom_favor", y="nombre", orientation="h",
-                     title="Promedio de puntos anotados por equipo",
-                     labels={"prom_favor": "Puntos a favor", "nombre": ""})
-        fig.update_traces(marker_color=color_equipos(r["equipo"]))
-        st.plotly_chart(fig, width="stretch")
-    with der:
-        r = resumen.sort_values("victorias")
-        fig = px.bar(r, x="victorias", y="nombre", orientation="h",
-                     title="Victorias por equipo",
-                     labels={"victorias": "Victorias", "nombre": ""})
-        fig.update_traces(marker_color=color_equipos(r["equipo"]))
-        st.plotly_chart(fig, width="stretch")
+    with st.expander("🤖 ¿Cómo funciona el modelo?"):
+        st.markdown(
+            """
+**Walk-forward, sin ver el futuro.** Cada partido se pronostica usando
+**solo los partidos anteriores** a él (el modelo se reajusta al empezar cada
+jornada). Nada de "entrenar con todo el histórico y luego fardar de aciertos":
+eso es la trampa más común que verás por internet.
 
-    izq, der = st.columns(2)
-    with izq:
-        fig = px.histogram(df_vista, x="margen", nbins=30,
-                           title="Distribución de márgenes (local − visitante)",
-                           labels={"margen": "Diferencia de puntos"})
-        fig.add_vline(x=0, line_dash="dash", line_color="white")
-        st.plotly_chart(fig, width="stretch")
-    with der:
-        sem = (df_vista.groupby("week")
-               .agg(puntos=("total_puntos", "mean"), partidos=("total_puntos", "size"))
-               .reset_index())
-        fig = px.line(sem, x="week", y="puntos", markers=True,
-                      title="Puntos por partido, por semana (tendencia)",
-                      labels={"week": "Semana", "puntos": "Puntos por partido"})
-        st.plotly_chart(fig, width="stretch")
+**Qué calcula** (ventana móvil de las 2 últimas temporadas, con una pequeña
+regularización para que los ratings no se disparen en la semana 1):
 
-    # Local vs visitante
-    fig = px.bar(
-        x=["Local", "Visitante"],
-        y=[df_vista["home_score"].mean(), df_vista["away_score"].mean()],
-        title="Promedio de puntos: local vs. visitante",
-        labels={"x": "", "y": "Puntos"}, color=["Local", "Visitante"],
-    )
-    st.plotly_chart(fig, width="stretch")
+- **Margen esperado** ≈ ventaja de jugar en casa + rating_local − rating_visitante
+- **Total esperado** ≈ base + ataque_local + ataque_visitante + defensa_local + defensa_visitante
 
-
-# ===========================================================================
-# TAB 2 — UNDERDOGS Y TENDENCIAS
-# ===========================================================================
-with tab2:
-    st.subheader(f"🐶 Underdogs — temporada {temporada_sel}")
-
-    ud = df_base[df_base["hay_underdog"]]
-    if len(ud):
-        gan = int(ud["gano_underdog"].sum())
-        pct = ud["gano_underdog"].mean() * 100
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Partidos con underdog", len(ud))
-        m2.metric("Underdogs que ganaron", gan)
-        m3.metric("% Underdogs que ganaron", f"{pct:.1f}%")
-
-    # % de underdogs que ganan por semana (LA TENDENCIA)
-    por_semana = (ud.groupby("week")
-                  .agg(pct=("gano_underdog", "mean"), n=("gano_underdog", "size"))
-                  .reset_index())
-    por_semana["pct"] = (por_semana["pct"] * 100).round(1)
-    fig = px.line(por_semana, x="week", y="pct", markers=True,
-                  title="% de underdogs que ganan, por semana",
-                  labels={"week": "Semana", "pct": "% que ganó"})
-    fig.add_hline(y=50, line_dash="dash", line_color="gray",
-                  annotation_text="50% (azar)")
-    st.plotly_chart(fig, width="stretch")
-
-    # Primetime vs no primetime
-    pt = ud[ud["primetime"]]
-    npt = ud[~ud["primetime"]]
-    pct_pt = pt["gano_underdog"].mean() * 100 if len(pt) else float("nan")
-    pct_npt = npt["gano_underdog"].mean() * 100 if len(npt) else float("nan")
-
-    izq, der = st.columns(2)
-    with izq:
-        fig = px.bar(
-            x=["Primetime 🌙", "Resto"], y=[pct_pt, pct_npt],
-            title="% underdogs que ganan: primetime vs. resto",
-            labels={"x": "", "y": "% que ganó"}, color=["Primetime", "Resto"],
+**El pick.** Se compara el pronóstico con la línea del mercado; la diferencia
+es el *edge* (puntos de ventaja). Solo se emite pick si el edge supera el
+umbral que elijas. Los *push* (línea clavada) devuelven el dinero y no cuentan.
+Las cuotas son las reales de nflverse (desde 2006); antes se asume −110.
+            """
         )
-        st.plotly_chart(fig, width="stretch")
+
+    umbral = st.select_slider(
+        "Umbral de edge: ventaja mínima del modelo para emitir un pick (puntos)",
+        options=[1.0, 1.5, 2.0, 2.5, 3.0, 4.0],
+        value=2.0,
+    )
+
+    # --- 1) La jornada pendiente (líneas ya publicadas) ---
+    st.subheader("📅 Jornada pendiente")
+
+    fut = picks_futuros.copy()
+    fut = fut[fut["margen_modelo"].notna() & fut["total_modelo"].notna()]
+
+    if len(fut):
+        fut["edge"] = fut["margen_modelo"] - fut["spread_line"]
+        fut["edge_total"] = fut["total_modelo"] - fut["total_line"]
+
+        n_picks_spread = int((fut["edge"].abs() >= umbral).sum())
+        n_picks_total = int((fut["edge_total"].abs() >= umbral).sum())
+        semanas = sorted(fut["week"].unique())
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Partidos con línea publicada", len(fut), border=True,
+                  help="Partidos pendientes que ya tienen spread en nflverse.")
+        m2.metric("Picks contra el spread", n_picks_spread, border=True,
+                  help=f"Partidos con edge ≥ {umbral} puntos contra la línea.")
+        m3.metric("Picks de total", n_picks_total, border=True,
+                  help=f"Partidos con edge ≥ {umbral} puntos en el total.")
+
+        semanas_txt = ", ".join(f"semana {int(s)}" for s in semanas)
+        st.caption(
+            f"Líneas capturadas el **{fecha_de_datos()}** ({semanas_txt}). "
+            "Las líneas se mueven durante la semana: si la cuota real ya no se "
+            "parece a esta, el edge puede haber desaparecido."
+        )
+
+        # Tabla: contra el spread
+        ts = fut[fut["edge"].abs() >= umbral].copy()
+        st.markdown("**Picks contra el spread**")
+        if len(ts):
+            ts["al_local"] = ts["edge"] > 0
+            ts["cuota"] = ts["home_spread_odds"].where(ts["al_local"], ts["away_spread_odds"])
+            ts["Pick"] = [
+                etiqueta_pick(eq, lin)
+                for eq, lin in zip(ts["home_team"].where(ts["al_local"], ts["away_team"]),
+                                   np.where(ts["al_local"], -ts["spread_line"], ts["spread_line"]))
+            ]
+            ts["Partido"] = (
+                ts["away_team"].map(APODOS).fillna(ts["away_team"]) + " @ "
+                + ts["home_team"].map(APODOS).fillna(ts["home_team"])
+            )
+            ts["Línea"] = [
+                f"{APODOS.get(loc, loc)} {-lin:+.1f}"
+                for loc, lin in zip(ts["home_team"], ts["spread_line"])
+            ]
+            ts["Nivel"] = ts["edge"].abs().map(nivel_confianza)
+            tabla_s = ts[["week", "gameday", "Partido", "Línea", "Pick",
+                          "margen_modelo", "edge", "cuota", "Nivel"]].rename(
+                columns={
+                    "week": "Semana", "gameday": "Fecha",
+                    "margen_modelo": "Margen modelo", "edge": "Edge",
+                    "cuota": "Cuota", "Partido": "Partido",
+                }
+            )
+            st.dataframe(
+                tabla_s, width="stretch", hide_index=True, height=min(430, 40 + 36 * len(tabla_s)),
+                column_config={
+                    "Semana": st.column_config.NumberColumn(format="%d"),
+                    "Margen modelo": st.column_config.NumberColumn(
+                        format="%+.1f", help="Margen esperado (local − visitante)."),
+                    "Edge": st.column_config.NumberColumn(
+                        format="%+.1f", help="Puntos que el modelo ve por encima de la línea."),
+                    "Cuota": st.column_config.NumberColumn(format="%d"),
+                    "Línea": st.column_config.TextColumn(
+                        help="La línea desde el equipo local (+ = local favorito)."),
+                },
+            )
+            st.caption(
+                f"{len(fut) - len(ts)} partidos quedaron sin pick: el modelo no "
+                "ve ventaja suficiente. Eso es lo normal — el mercado casi "
+                "siempre está bien puesto."
+            )
+        else:
+            st.info("Ningún partido supera el umbral esta jornada. Es lo habitual.")
+
+        # Tabla: totales
+        tt = fut[fut["edge_total"].abs() >= umbral].copy()
+        st.markdown("**Picks de total (más/menos)**")
+        if len(tt):
+            tt["Pick"] = np.where(
+                tt["edge_total"] > 0,
+                "Más de " + tt["total_line"].astype(str),
+                "Menos de " + tt["total_line"].astype(str),
+            )
+            tt["Partido"] = (
+                tt["away_team"].map(APODOS).fillna(tt["away_team"]) + " @ "
+                + tt["home_team"].map(APODOS).fillna(tt["home_team"])
+            )
+            tt["Cuota"] = tt["over_odds"].where(tt["edge_total"] > 0, tt["under_odds"])
+            tt["Nivel"] = tt["edge_total"].abs().map(nivel_confianza)
+            st.dataframe(
+                tt[["week", "gameday", "Partido", "total_line", "total_modelo",
+                    "edge_total", "Pick", "Cuota", "Nivel"]].rename(
+                    columns={
+                        "week": "Semana", "gameday": "Fecha",
+                        "total_line": "Total (línea)", "total_modelo": "Total modelo",
+                        "edge_total": "Edge",
+                    }
+                ),
+                width="stretch", hide_index=True, height=min(430, 40 + 36 * len(tt)),
+                column_config={
+                    "Semana": st.column_config.NumberColumn(format="%d"),
+                    "Total (línea)": st.column_config.NumberColumn(format="%.1f"),
+                    "Total modelo": st.column_config.NumberColumn(
+                        format="%.1f", help="Puntos totales esperados."),
+                    "Edge": st.column_config.NumberColumn(format="%+.1f"),
+                    "Cuota": st.column_config.NumberColumn(format="%d"),
+                },
+            )
+        else:
+            st.info("Ningún total supera el umbral esta jornada.")
+    else:
+        st.info(
+            "Ahora mismo no hay partidos pendientes con línea publicada "
+            "(temporada terminada o líneas aún sin abrir). Vuelve en la semana "
+            "de partidos o pulsa «🔄 Actualizar líneas»."
+        )
+
+    # --- 2) Historial walk-forward del modelo (2006+ = cuotas reales) ---
+    st.subheader("📜 Historial del modelo")
+    st.caption(
+        "Evaluación **walk-forward** de toda la serie con cuotas reales "
+        "(2006 en adelante). Incluye lo bueno y lo malo, tal cual salió. "
+        "Los push no cuentan como acierto y devuelven el dinero."
+    )
+
+    hist_era = hist_picks[hist_picks["season"] >= 2006].copy()
+    picks_spread = evaluar_spread(hist_era, umbral)
+    picks_total = evaluar_totales(hist_era, umbral)
+
+    n_s, acierto_s, roi_s = metricas_picks(picks_spread)
+    n_t, acierto_t, roi_t = metricas_picks(picks_total)
+
+    # Referencias "a ciegas" del mismo periodo (para comparar)
+    ciega_fav = hist_era[hist_era["cubre_favorito"].notna()]
+    roi_ciego_fav = float(ganancia_apuesta(
+        ciega_fav["home_spread_odds"].where(ciega_fav["favorito_local"],
+                                            ciega_fav["away_spread_odds"]),
+        ciega_fav["cubre_favorito"],
+    ).mean()) * 100
+    ciega_tot = hist_era[hist_era["over"].notna()]
+    roi_ciego_tot = float(np.mean([
+        ganancia_apuesta(ciega_tot["over_odds"], ciega_tot["over"]).mean(),
+        ganancia_apuesta(ciega_tot["under_odds"], ~ciega_tot["over"]).mean(),
+    ])) * 100
+
+    h1, h2, h3, h4 = st.columns(4)
+    h1.metric(
+        "Picks contra el spread", n_s, border=True,
+        help="Apuestas emitidas con este umbral desde 2006 (sin push).",
+    )
+    h2.metric(
+        "Acierto contra el spread",
+        f"{acierto_s:.1f}%" if n_s else "—",
+        border=True,
+        help="Hay que acertar ~52.4% para empatar con cuota -110.",
+    )
+    h3.metric(
+        "ROI contra el spread",
+        f"{roi_s:+.1f}%" if n_s else "—",
+        delta=f"{roi_s - roi_ciego_fav:+.1f} pp vs a ciegas" if n_s else None,
+        border=True,
+        help="Ganancia media por $1 apostado, comparada con apostar siempre "
+             "al favorito en el mismo periodo.",
+    )
+    h4.metric(
+        "ROI en totales",
+        f"{roi_t:+.1f}%" if n_t else "—",
+        delta=f"{roi_t - roi_ciego_tot:+.1f} pp vs a ciegas" if n_t else None,
+        border=True,
+        help=f"{n_t} picks de más/menos. Comparado con apostar a ciegas "
+             "over/under en el mismo periodo.",
+    )
+
+    # Gráfica 1: la banca acumulada (modelo vs a ciegas)
+    def serie_banca(ganancias, etiqueta, seasons, semanas):
+        ganancias = pd.Series(ganancias).astype(float)
+        return pd.DataFrame({
+            "apuesta": np.arange(1, len(ganancias) + 1),
+            "estrategia": etiqueta,
+            "ganancia": ganancias.cumsum().to_numpy(),
+            "season": np.asarray(seasons),
+            "week": np.asarray(semanas),
+        })
+
+    banca = pd.concat([
+        serie_banca(picks_spread["ganancia"], "Modelo · spread",
+                    picks_spread["season"], picks_spread["week"]),
+        serie_banca(picks_total["ganancia"], "Modelo · totales",
+                    picks_total["season"], picks_total["week"]),
+        serie_banca(ganancia_apuesta(
+            ciega_fav["home_spread_odds"].where(ciega_fav["favorito_local"],
+                                                ciega_fav["away_spread_odds"]),
+            ciega_fav["cubre_favorito"],
+        ), "A ciegas · favoritos", ciega_fav["season"], ciega_fav["week"]),
+    ], ignore_index=True)
+
+    fig = px.line(
+        banca, x="apuesta", y="ganancia", color="estrategia",
+        color_discrete_map={
+            "Modelo · spread": "#00C46A", "Modelo · totales": "#4C9AFF",
+            "A ciegas · favoritos": "#5B6B8C",
+        },
+        custom_data=["season", "week"],
+        title="La banca: $1 por apuesta, acumulado (2006–hoy)",
+        labels={"apuesta": "Nº de apuesta (cronológico)", "ganancia": "Ganancia ($)", "estrategia": ""},
+    )
+    fig.update_traces(
+        line=dict(width=2.5),
+        hovertemplate="Apuesta nº %{x}<br><b>%{fullData.name}</b>"
+                      "<br>Acumulado: $%{y:.0f}"
+                      "<br>Temporada %{customdata[0]}, semana %{customdata[1]}"
+                      "<extra></extra>",
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,.35)")
+    mostrar_grafica(fig, alto=470)
+    st.caption(
+        "Cada línea es una estrategia apostando $1 en cada partido. Si una "
+        "línea baja con el tiempo, esa estrategia pierde: la casa se queda "
+        "con la diferencia. El objetivo de un modelo es **no caer rápido**, "
+        "no hacerse rico."
+    )
+
+    # Gráfica 2 (izq): ROI por temporada — y 3 (der): ¿más edge = más acierto?
+    izq, der = st.columns(2)
+    with izq:
+        roi_temp = pd.concat([
+            picks_spread.groupby("season").agg(roi=("ganancia", "mean"), n=("ganancia", "size"))
+            .assign(estrategia="Spread"),
+            picks_total.groupby("season").agg(roi=("ganancia", "mean"), n=("ganancia", "size"))
+            .assign(estrategia="Totales"),
+        ]).reset_index()
+        roi_temp["roi"] = (roi_temp["roi"] * 100).round(1)
+        roi_temp["season"] = roi_temp["season"].astype(int).astype(str)
+        fig = px.bar(
+            roi_temp, x="season", y="roi", color="estrategia", barmode="group",
+            color_discrete_map={"Spread": "#00C46A", "Totales": "#4C9AFF"},
+            custom_data=["n"],
+            title="ROI del modelo por temporada",
+            labels={"season": "Temporada", "roi": "ROI (%)", "estrategia": ""},
+        )
+        fig.update_traces(
+            hovertemplate="Temporada %{x} · <b>%{fullData.name}</b>"
+                          "<br>ROI: %{y:+.1f}%<br>Apuestas: %{customdata[0]}"
+                          "<extra></extra>",
+        )
+        fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,.4)")
+        mostrar_grafica(fig)
+        st.caption(
+            "Una temporada ganadora no es una estrategia: fíjate en la mezcla "
+            "de años verdes y rojos. Y ojo: aquí NO está contado nada de suerte "
+            "posterior — el ROI ya incluye todas las apuestas del umbral elegido."
+        )
+
     with der:
-        # Underdogs por equipo (cuántas veces fueron underdog y cuántas ganaron)
-        filas = []
-        for _, g in ud.iterrows():
-            if g["local_underdog"]:
-                filas.append({"equipo": g["home_team"], "gano": g["gano_underdog"]})
-            else:
-                filas.append({"equipo": g["away_team"], "gano": g["gano_underdog"]})
-        t = pd.DataFrame(filas)
-        res = (t.groupby("equipo")
-               .agg(veces=("gano", "size"), ganadas=("gano", "sum")).reset_index())
-        res["pct"] = (res["ganadas"] / res["veces"] * 100).round(1)
-        res["nombre"] = res["equipo"].map(lambda e: datos.con_nombre(e, NOMBRES))
-        res = res.sort_values("pct", ascending=False)
-        fig = px.bar(res, x="pct", y="nombre", orientation="h",
-                     title="% de veces que ganó siendo underdog (por equipo)",
-                     labels={"pct": "% ganadas", "nombre": ""})
-        fig.update_traces(marker_color=color_equipos(res["equipo"]))
-        st.plotly_chart(fig, width="stretch")
-
-    st.info(
-        f"Esta temporada, los underdogs ganaron **{pct_ud:.0f}%** de sus partidos. "
-        f"En primetime: **{pct_pt:.0f}%**. El resto: **{pct_npt:.0f}%**. "
-        "⚠️ Con pocos partidos, una racha puede parecer una 'tendencia', pero suele "
-        "ser **variación aleatoria**. Cambia de temporada y compara."
-    )
+        d = hist_picks[
+            (hist_picks["season"] >= 2006) & hist_picks["margen_modelo"].notna()
+            & hist_picks["spread_line"].notna()
+        ].copy()
+        d["edge"] = d["margen_modelo"] - d["spread_line"]
+        d["al_local"] = d["edge"] > 0
+        d["gano"] = d["cubre_local"].where(d["al_local"], d["cubre_visitante"])
+        d["gano"] = d["gano"].mask(d["push_spread"].fillna(False))
+        d["tramo"] = pd.cut(d["edge"].abs(), [0, 1, 2, 3, 4, 6, 100],
+                            labels=["0–1", "1–2", "2–3", "3–4", "4–6", "6+"])
+        res_edge = (d.groupby("tramo", observed=True)
+                    .agg(ats=("gano", "mean"), n=("gano", "count")).reset_index())
+        res_edge["ats"] = (res_edge["ats"] * 100).round(1)
+        fig = px.bar(
+            res_edge, x="tramo", y="ats", custom_data=["n"], text="ats",
+            title="¿Un edge más grande acierta más? (spread)",
+            labels={"tramo": "Tamaño del edge (puntos)", "ats": "% que cubrió"},
+        )
+        fig.update_traces(
+            marker_color="#F2C14E", texttemplate="%{text:.0f}%", textposition="outside",
+            hovertemplate="Edge %{x} pts: %{y:.1f}%<br>Partidos: %{customdata[0]}"
+                          "<extra></extra>",
+        )
+        fig.add_hline(y=52.4, line_dash="dash", line_color="#00C46A",
+                      annotation_text="52.4% = empatar con -110")
+        fig.add_hline(y=50, line_dash="dot", line_color="rgba(255,255,255,.4)",
+                      annotation_text="50% (azar)")
+        mostrar_grafica(fig)
+        st.caption(
+            "Esta gráfica es la más honesta de todas: un edge grande **no** "
+            "garantiza acertar más. Si la ventaja real existiera y el mercado "
+            "no la viera, esta escalera subiría... y no sube."
+        )
 
 
 # ===========================================================================
-# TAB 3 — EDUCACIÓN
+# TAB 2 — ATS POR EQUIPO
 # ===========================================================================
-with tab3:
-    st.subheader("📚 Cómo leer esto sin engañarte")
+with tab_ats:
+    st.header("📈 ATS por equipo (contra la línea)")
+
     st.markdown(
-        """
-        **¿Por qué el casino siempre gana?** Por el **margen de la casa** (*vig*).
-        En una cuota `-110` arriesgas 110 para ganar 100: necesitas ~**52.4%**
-        solo para empatar. El margen típico es **4–7%** por mercado.
-
-        **Valor esperado (EV):**
-
-        ```
-        EV = (prob. de ganar × ganancia) − (prob. de perder × pérdida)
-        ```
-
-        Si el EV es negativo, por muchas rachas que tengas, a largo plazo pierdes.
-
-        **Cuidado con las "tendencias" (la trampa más común):**
-
-        - "Los underdogs en primetime ganan todo" puede ser **casualidad** de pocos
-          partidos, no un patrón real.
-        - Esto se llama **apofenia**: ver patrones donde solo hay azar.
-        - Con 50 lanzamientos de moneda, ver 30 caras es normal. No significa que
-          la moneda esté cargada.
-
-        **Regla de oro:** antes de creer una tendencia, pregúntate:
-        ¿*cuántos* partidos son? ¿se repite en *varias* temporadas? ¿hay una
-        *razón* (no solo el dato)?
-
-        > Este dashboard sirve para **entender** los datos y el sistema,
-        > no para "vencerlo".
-        """
+        "**ATS** = *against the spread*: no es si el equipo gana, es si **cubre "
+        "la línea**. Si el local es favorito por 3 y gana por 1, ganó el partido "
+        "pero no cubrió: para el mercado, perdió."
     )
+
+    apuestas_todas = partidos[
+        partidos["cubre_favorito"].notna() & partidos["over"].notna()
+    ].copy()
+    reg = registros_ats(df_vista)
+
+    if len(reg):
+        mejor = reg.sort_values("pct", ascending=False).iloc[0]
+        peor = reg.sort_values("pct", ascending=True).iloc[0]
+    else:
+        mejor = peor = None
+
+    n1, n2, n3, n4 = st.columns(4)
+    n1.metric(
+        "Partidos con línea (filtro)", int(len(df_vista[df_vista["spread_line"].notna()])),
+        border=True,
+        help="Partidos de la temporada/filtro actual comparables contra la línea.",
+    )
+    n2.metric(
+        "Push (línea clavada)",
+        f"{df_vista['push_spread'].fillna(False).mean() * 100:.1f}%"
+        if len(df_vista) else "—",
+        border=True,
+        help="Partidos que terminaron EXACTAMENTE en la línea. Devuelven el "
+             "dinero. Por eso las casas prefieren líneas .5.",
+    )
+    n3.metric(
+        "Mejor ATS", f"{mejor['apodo']} · {mejor['pct']:.0f}%" if mejor is not None else "—",
+        border=True,
+        help="Mejor % cubriendo la línea en el filtro actual (puede ser racha de suerte).",
+    )
+    n4.metric(
+        "Peor ATS", f"{peor['apodo']} · {peor['pct']:.0f}%" if peor is not None else "—",
+        border=True,
+        help="Peor % cubriendo la línea en el filtro actual (puede ser mala suerte).",
+    )
+
+    with st.expander("📅 Todos los partidos de la temporada (con línea y resultado ATS)"):
+        cols_mostrar = ["week", "weekday", "gametime", "away_team", "home_team",
+                        "away_score", "home_score", "spread_line"]
+        tabla = df_vista[[c for c in cols_mostrar if c in df_vista.columns]].copy()
+        tabla["Cubrió"] = np.select(
+            [
+                df_vista["push_spread"].fillna(False),
+                df_vista["cubre_local"].fillna(False),
+                df_vista["cubre_visitante"].fillna(False),
+            ],
+            ["Push (todos)", "Local", "Visitante"],
+            default="—",
+        )
+        for equipo_col in ("away_team", "home_team"):
+            tabla[equipo_col] = tabla[equipo_col].map(lambda e: APODOS.get(e, e))
+        tabla["weekday"] = tabla["weekday"].replace(DIAS_ES)
+        st.dataframe(
+            tabla.rename(columns={
+                "week": "Semana", "weekday": "Día", "gametime": "Hora",
+                "away_team": "Visitante", "home_team": "Local",
+                "away_score": "Pts visitante", "home_score": "Pts local",
+                "spread_line": "Spread",
+            }),
+            width="stretch", hide_index=True, height=420,
+            column_config={
+                "Semana": st.column_config.NumberColumn(format="%d"),
+                "Hora": st.column_config.TextColumn(help="Hora de inicio en el Este (ET)."),
+                "Pts visitante": st.column_config.NumberColumn(format="%d"),
+                "Pts local": st.column_config.NumberColumn(format="%d"),
+                "Spread": st.column_config.NumberColumn(
+                    format="%.1f",
+                    help="Positivo: el local es favorito (el visitante es underdog). "
+                         "Negativo: el local es underdog.",
+                ),
+            },
+        )
+
+    if len(reg):
+        # Gráfica: récord ATS por equipo
+        r = reg.sort_values("pct")
+        fig = px.bar(
+            r, x="pct", y="apodo", orientation="h",
+            custom_data=["cubiertas", "falladas", "pushes"],
+            title="% de veces que cada equipo cubrió la línea",
+            labels={"pct": "% que cubrió", "apodo": ""},
+        )
+        fig.update_traces(
+            marker_color=color_equipos(r["equipo"]),
+            hovertemplate="%{y}: %{x:.1f}%<br>Cubrió %{customdata[0]}, falló "
+                          "%{customdata[1]}, push %{customdata[2]}<extra></extra>",
+        )
+        fig.add_vline(x=50, line_dash="dash", line_color="rgba(255,255,255,.4)")
+        mostrar_grafica(fig, alto=max(430, 14 * len(r) + 90))
+        st.caption(
+            "La línea se mueve justo para que esto ronde el 50%. Los extremos "
+            "(muy por encima o por debajo) suelen ser **rachas**, no virtudes: "
+            "mira el nº de partidos en el tooltip antes de creerte un 70%."
+        )
+
+    # Mapa de calor ATS de la temporada
+    st.subheader(f"🔥 Mapa de calor ATS — temporada {temporada_sel}")
+    zv, zt = matriz_ats(df_temp)
+    if len(zv):
+        reg_temp = registros_ats(df_temp).set_index("equipo")["pct"]
+        orden = reg_temp.sort_values(ascending=False).index.tolist()
+        orden = [e for e in orden if e in zv.index]
+        semanas = list(zv.columns)
+        fig = go.Figure(go.Heatmap(
+            z=zv.reindex(orden).to_numpy(dtype=float),
+            x=[f"S{int(s)}" for s in semanas],
+            y=[APODOS.get(e, e) for e in orden],
+            customdata=zt.reindex(orden).to_numpy(),
+            colorscale=[
+                [0.0, "#FF6B6B"], [0.499, "#FF6B6B"],
+                [0.5, "#5B6B8C"], [0.501, "#00C46A"], [1.0, "#00C46A"],
+            ],
+            zmin=-1, zmax=1, showscale=False,
+            hovertemplate="%{y} · %{x}<br>%{customdata}<extra></extra>",
+            xgap=2, ygap=3,
+        ))
+        mostrar_grafica(fig, alto=max(560, 20 * len(orden) + 120))
+        st.caption(
+            "Verde = cubrió la línea · rojo = no la cubrió · gris = push · "
+            "hueco = no jugó. Equipos ordenados por % de la temporada. Este mapa "
+            "no depende de los filtros de la barra lateral (siempre muestra la "
+            "temporada completa) para que veas el cuadro entero."
+        )
+
+    # Favoritos cubriendo según el tamaño de la línea (toda la serie)
+    izq, der = st.columns(2)
+    with izq:
+        tam = apuestas_todas.copy()
+        tam["tramo"] = pd.cut(tam["spread_line"].abs(), [0, 1, 3, 6.5, 10, 100],
+                              labels=["0–1", "1.5–3", "3.5–6.5", "7–10", "10.5+"])
+        res_tam = (tam.groupby("tramo", observed=True)
+                   .agg(cubre=("cubre_favorito", "mean"), n=("cubre_favorito", "size"))
+                   .reset_index())
+        res_tam["cubre"] = (res_tam["cubre"] * 100).round(1)
+        fig = px.bar(
+            res_tam, x="tramo", y="cubre", custom_data=["n"], text="cubre",
+            title="% de favoritos que cubren, por tamaño de línea",
+            labels={"tramo": "Favoritismo (puntos)", "cubre": "% que cubrió"},
+        )
+        fig.update_traces(
+            marker_color="#00C46A", texttemplate="%{text:.0f}%", textposition="outside",
+            hovertemplate="Spread %{x}: %{y:.1f}%<br>Partidos: %{customdata[0]}"
+                          "<extra></extra>",
+        )
+        fig.add_hline(y=50, line_dash="dash", line_color="rgba(255,255,255,.4)")
+        mostrar_grafica(fig)
+        st.caption("Toda la serie (1999–hoy). Ni los favoritos grandes ni los "
+                   "pequeños cubren de forma sistemática.")
+    with der:
+        por_temp = (apuestas_todas.groupby("season")
+                    .agg(cubre=("cubre_favorito", "mean"), n=("cubre_favorito", "size"))
+                    .reset_index())
+        por_temp["cubre"] = (por_temp["cubre"] * 100).round(1)
+        fig = px.line(
+            por_temp, x="season", y="cubre", markers=True, custom_data=["n"],
+            title="% de favoritos que cubren, por temporada",
+            labels={"season": "Temporada", "cubre": "% que cubrió"},
+        )
+        fig.update_traces(
+            line=dict(width=3, color="#4C9AFF"), marker=dict(size=7, color="#4C9AFF"),
+            hovertemplate="Temporada %{x}: %{y:.1f}%<br>Partidos: %{customdata[0]}"
+                          "<extra></extra>",
+        )
+        fig.add_hline(y=50, line_dash="dash", line_color="rgba(255,255,255,.4)")
+        fig.update_xaxes(dtick=2)
+        mostrar_grafica(fig)
+        st.caption("Temporada tras temporada, el resultado se pasea alrededor "
+                   "del 50%: el precio manda.")
+
+
+# ===========================================================================
+# TAB 3 — TOTALES Y CLIMA
+# ===========================================================================
+with tab_totales:
+    st.header("🎲 Totales (más/menos) y clima")
+
+    st.markdown(
+        "El mercado del **total** es la línea de puntos sumados. Aquí ves "
+        "quiénes empujan los partidos hacia arriba (overs), qué pesa el clima "
+        "y cómo de bien clava el mercado la línea semana a semana."
+    )
+
+    tot_eq = totales_por_equipo(df_vista)
+    sob = df_vista[df_vista["over"].notna()]
+
+    interior = partidos[partidos["interior"].fillna(False)]
+    exterior = partidos[~partidos["interior"].fillna(False)]
+    pts_interior = interior["total_puntos"].mean() if len(interior) else float("nan")
+    pts_exterior = exterior["total_puntos"].mean() if len(exterior) else float("nan")
+
+    t1, t2, t3, t4 = st.columns(4)
+    t1.metric(
+        "Overs del total", f"{sob['over'].mean() * 100:.1f}%" if len(sob) else "—",
+        border=True,
+        help="Partidos filtrados que superaron la línea del total (sin push).",
+    )
+    t2.metric(
+        "Puntos por partido",
+        f"{df_vista['total_puntos'].mean():.1f}" if len(df_vista) else "—",
+        border=True,
+        help="Media real de puntos anotados en los partidos filtrados.",
+    )
+    t3.metric(
+        "Puntos · bajo techo", f"{pts_interior:.1f}" if len(interior) else "—",
+        border=True,
+        help="Media en estadios con techo cerrado (toda la serie).",
+    )
+    t4.metric(
+        "Puntos · intemperie", f"{pts_exterior:.1f}" if len(exterior) else "—",
+        border=True,
+        help="Media al aire libre (toda la serie). El clima suele venir ya "
+             "cobrado en la línea.",
+    )
+
+    izq, der = st.columns(2)
+    with izq:
+        if len(tot_eq):
+            r = tot_eq.sort_values("pct")
+            fig = px.bar(
+                r, x="pct", y="apodo", orientation="h", custom_data=["overs", "n"],
+                title="% de overs por equipo (temporada/filtro)",
+                labels={"pct": "% over", "apodo": ""},
+            )
+            fig.update_traces(
+                marker_color=color_equipos(r["equipo"]),
+                hovertemplate="%{y}: %{x:.1f}%<br>%{customdata[0]} de "
+                              "%{customdata[1]} partidos<extra></extra>",
+            )
+            fig.add_vline(x=50, line_dash="dash", line_color="rgba(255,255,255,.4)")
+            mostrar_grafica(fig, alto=max(430, 14 * len(r) + 90))
+    with der:
+        semana = (df_base.groupby("week")
+                  .agg(puntos=("total_puntos", "mean"), linea=("total_line", "mean"),
+                       partidos=("total_puntos", "size"))
+                  .reset_index())
+        df_largo = pd.concat([
+            semana[["week", "puntos", "partidos"]].rename(columns={"puntos": "valor"})
+            .assign(serie="Puntos reales"),
+            semana[["week", "linea", "partidos"]].rename(columns={"linea": "valor"})
+            .assign(serie="Línea del mercado"),
+        ])
+        fig = px.line(
+            df_largo, x="week", y="valor", color="serie", markers=True,
+            color_discrete_map={"Puntos reales": "#00C46A", "Línea del mercado": "#4C9AFF"},
+            title="Puntos por semana: realidad vs. línea del mercado",
+            labels={"week": "Semana", "valor": "Puntos por partido", "serie": ""},
+        )
+        fig.update_traces(line=dict(width=2.5), marker=dict(size=7))
+        mostrar_grafica(fig, alto=max(430, 14 * len(tot_eq) + 90))
+        st.caption(
+            "La línea azul es lo que el mercado esperaba; la verde, lo que pasó. "
+            "Van pegadas: el precio es un pronóstico muy bueno."
+        )
+
+    # Clima: viento y temperatura (solo partidos al aire libre con dato)
+    fuera = partidos[partidos["wind"].notna()].copy()
+    izq, der = st.columns(2)
+    with izq:
+        fuera["tramo"] = pd.cut(fuera["wind"], [0, 5, 10, 15, 100],
+                                labels=["0–5", "5–10", "10–15", "15+"])
+        res_v = (fuera.groupby("tramo", observed=True)
+                 .agg(puntos=("total_puntos", "mean"), over=("over", "mean"),
+                      n=("over", "count"))
+                 .reset_index())
+        res_o = res_v.copy()
+        res_o["over"] = (res_o["over"] * 100).round(1)
+        fig = px.bar(
+            res_o, x="tramo", y="over", custom_data=["n"], text="over",
+            title="% de overs según el viento (al aire libre)",
+            labels={"tramo": "Viento (mph)", "over": "% over"},
+        )
+        fig.update_traces(
+            marker_color="#4C9AFF", texttemplate="%{text:.0f}%", textposition="outside",
+            hovertemplate="Viento %{x} mph: %{y:.1f}% over<br>Partidos: %{customdata[0]}"
+                          "<extra></extra>",
+        )
+        fig.add_hline(y=50, line_dash="dash", line_color="rgba(255,255,255,.4)")
+        mostrar_grafica(fig)
+    with der:
+        fig = px.bar(
+            res_v, x="tramo", y="puntos", custom_data=["n"], text="puntos",
+            title="Puntos por partido según el viento (al aire libre)",
+            labels={"tramo": "Viento (mph)", "puntos": "Puntos por partido"},
+        )
+        fig.update_traces(
+            marker_color="#B48EFF", texttemplate="%{text:.1f}", textposition="outside",
+            hovertemplate="Viento %{x} mph: %{y:.1f} puntos<br>Partidos: %{customdata[0]}"
+                          "<extra></extra>",
+        )
+        mostrar_grafica(fig)
+    st.caption(
+        "Con viento fuerte se anotan 3–4 puntos menos por partido... y aun así "
+        "el % de overs no se dispara: la línea ya suele venir ajustada al clima "
+        "(y solo hay dato de viento para partidos al aire libre: ~2 de cada 3)."
+    )
+
+    # Temperatura (solo exteriores con dato)
+    frio = partidos[partidos["temp"].notna()].copy()
+    if len(frio):
+        frio["tramo"] = pd.cut(frio["temp"], [0, 32, 50, 70, 200],
+                               labels=["< 32°F", "32–49°F", "50–69°F", "70°F+"])
+        res_t = (frio.groupby("tramo", observed=True)
+                 .agg(puntos=("total_puntos", "mean"), over=("over", "mean"),
+                      n=("over", "count"))
+                 .reset_index())
+        res_t["puntos"] = res_t["puntos"].round(1)
+        fig = px.bar(
+            res_t, x="tramo", y="puntos", custom_data=["n"], text="puntos",
+            title="Puntos por partido según la temperatura (exteriores)",
+            labels={"tramo": "Temperatura", "puntos": "Puntos por partido"},
+        )
+        fig.update_traces(
+            marker_color="#F2C14E", texttemplate="%{text:.1f}", textposition="outside",
+            hovertemplate="%{x}: %{y:.1f} puntos<br>Partidos: %{customdata[0]}"
+                          "<extra></extra>",
+        )
+        mostrar_grafica(fig, alto=380)
+        st.caption(
+            "El frío baja el total medio y el calor lo sube, pero la línea del "
+            "mercado ya lo sabe: la pregunta correcta nunca es «¿hace frío?», "
+            "sino «¿está el frío **ya** en el precio?»."
+        )
+
+
+# ===========================================================================
+# TAB 4 — NÚMEROS CLAVE
+# ===========================================================================
+with tab_clave:
+    st.header("🧮 Números clave y descanso")
+    st.caption(
+        "Esta pestaña usa **todo el histórico**: los números clave (3 y 7), el "
+        "descanso y el primetime son propiedades del juego, y se ven mejor con "
+        "miles de partidos que con una temporada suelta."
+    )
+
+    # Métricas de números clave
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(
+        "Margen exacto = 3", f"{(partidos['margen'] == 3).mean() * 100:.1f}%",
+        border=True,
+        help="Gol de campo: el resultado más habitual de la NFL.",
+    )
+    k2.metric(
+        "Margen exacto = 7", f"{(partidos['margen'] == 7).mean() * 100:.1f}%",
+        border=True,
+        help="Touchdown + punto extra.",
+    )
+    lineas_enteras = partidos[
+        partidos["spread_line"].notna() & (partidos["spread_line"] % 1 == 0)
+        & (partidos["spread_line"] != 0)
+    ]
+    k3.metric(
+        "Push con línea entera",
+        f"{lineas_enteras['push_spread'].fillna(False).mean() * 100:.1f}%"
+        if len(lineas_enteras) else "—",
+        border=True,
+        help="Se clavó la línea exacta: la apuesta devuelve el dinero.",
+    )
+    k4.metric(
+        "Push con línea .5", "0.0%", border=True,
+        help="Imposible por diseño: por eso las casas prefieren líneas .5.",
+    )
+
+    # Gráfica 1: distribución de márgenes
+    fig = px.histogram(
+        partidos[partidos["margen"].abs() <= 35], x="margen", nbins=71,
+        title="Los márgenes de 3 y 7 puntos mandan",
+        labels={"margen": "Margen (local − visitante)", "count": "Partidos"},
+    )
+    fig.update_traces(marker_color="#4C9AFF", marker_line_width=0)
+    fig.add_vline(x=3, line_dash="dash", line_color="#F2C14E",
+                  annotation_text="3 (gol de campo)")
+    fig.add_vline(x=7, line_dash="dash", line_color="#F2C14E",
+                  annotation_text="7 (TD + extra)")
+    fig.add_vline(x=0, line_dash="dot", line_color="rgba(255,255,255,.35)",
+                  annotation_text="empate")
+    mostrar_grafica(fig)
+    st.caption(
+        "Por esto las líneas suelen ser 2.5, 3.5, 6.5, 7.5…: en los enteros "
+        "(3, 7, 10) es donde más veces se «clava» la línea y se devuelve el "
+        "dinero (**push**). Las casas mueven la línea justo por esto."
+    )
+
+    # Gráfica 2: ¿qué líneas enteras se clavan más?
+    li = partidos[
+        partidos["spread_line"].notna() & (partidos["spread_line"] % 1 == 0)
+        & (partidos["spread_line"] != 0)
+    ].copy()
+    if len(li):
+        li["linea"] = li["spread_line"].abs()
+        res_p = (li.groupby("linea")
+                 .agg(push=("push_spread", "mean"), n=("push_spread", "size"))
+                 .reset_index())
+        res_p = res_p[res_p["n"] >= 10].sort_values("push", ascending=False).head(8)
+        res_p["push"] = (res_p["push"] * 100).round(1)
+        res_p["etiqueta"] = res_p["linea"].map(lambda x: f"±{int(x)}")
+        fig = px.bar(
+            res_p, x="etiqueta", y="push", custom_data=["n"], text="push",
+            title="¿Dónde se clava la línea? (% de push por línea entera)",
+            labels={"etiqueta": "Línea (valor absoluto)", "push": "% push"},
+        )
+        fig.update_traces(
+            marker_color="#FF6B6B", texttemplate="%{text:.1f}%", textposition="outside",
+            hovertemplate="Línea %{x}: %{y:.1f}% push<br>Partidos: %{customdata[0]}"
+                          "<extra></extra>",
+        )
+        mostrar_grafica(fig)
+        st.caption(
+            "La línea 3 es la reina del push (termina clavada ~10% de las "
+            "veces). Es la razón matemática por la que existe la línea 3.5: "
+            "evitar devoluciones y asegurar el vig."
+        )
+
+    izq, der = st.columns(2)
+    with izq:
+        # Descanso
+        des = partidos.copy()
+        des["tramo"] = pd.cut(
+            des["ventaja_descanso"], [-30, -3.5, -0.5, 0.5, 3.5, 30],
+            labels=["≤ −4", "−3 a −1", "Igual (0)", "+1 a +3", "≥ +4"],
+        )
+        res_des = (des.groupby("tramo", observed=True)
+                   .agg(gana_local=("gano_local", "mean"), n=("gano_local", "size"))
+                   .reset_index())
+        res_des["gana_local"] = (res_des["gana_local"] * 100).round(1)
+        fig = px.bar(
+            res_des, x="tramo", y="gana_local", custom_data=["n"], text="gana_local",
+            title="Victorias del local según descanso",
+            labels={"tramo": "Días extra de descanso del local", "gana_local": "% gana local"},
+        )
+        fig.update_traces(
+            marker_color="#B48EFF", texttemplate="%{text:.0f}%", textposition="outside",
+            hovertemplate="%{x}: %{y:.1f}%<br>Partidos: %{customdata[0]}"
+                          "<extra></extra>",
+        )
+        fig.add_hline(y=50, line_dash="dash", line_color="rgba(255,255,255,.4)")
+        mostrar_grafica(fig)
+    with der:
+        # Primetime: ¿ángulo real o historia del abuelo?
+        ud = df_base[df_base["hay_underdog"]]
+        pt = ud[ud["primetime"]]
+        npt = ud[~ud["primetime"]]
+        pct_pt = pt["gano_underdog"].mean() * 100 if len(pt) else float("nan")
+        pct_npt = npt["gano_underdog"].mean() * 100 if len(npt) else float("nan")
+        res_pt = pd.DataFrame({
+            "grupo": ["Primetime 🌙", "Resto"],
+            "pct": [pct_pt, pct_npt],
+            "n": [len(pt), len(npt)],
+        })
+        fig = px.bar(
+            res_pt, x="grupo", y="pct", color="grupo", custom_data=["n"],
+            title="% de underdogs que ganan: primetime vs. resto (temporada)",
+            labels={"grupo": "", "pct": "% que ganó"},
+            color_discrete_map={"Primetime 🌙": "#F2C14E", "Resto": "#5B6B8C"},
+        )
+        fig.update_traces(
+            showlegend=False,
+            hovertemplate="%{x}: %{y:.1f}%<br>Partidos con underdog: %{customdata[0]}"
+                          "<extra></extra>",
+        )
+        mostrar_grafica(fig)
+
+    n_ud = len(df_base[df_base["hay_underdog"]])
+    st.caption(
+        f"El «descanso da ventaja» y «en primetime pasan cosas raras» se "
+        f"desmontan con datos: los efectos o son minúsculos o ya están en la "
+        f"línea. En la temporada elegida hay {n_ud} partidos con underdog: con "
+        "tan pocos, casi cualquier resultado es compatible con el azar "
+        "(**apofenia**: ver patrones donde solo hay ruido). "
+        "Antes de creer una tendencia: ¿cuántos partidos son? ¿se repite en "
+        "varias temporadas? ¿hay una razón?"
+    )
+
+
+# ===========================================================================
+# TAB 5 — MERCADO Y VIG
+# ===========================================================================
+with tab_mercado:
+    st.header("💰 Mercado, vig y la banca a ciegas")
+
+    st.caption(
+        "Esta pestaña usa **todas las temporadas** a propósito: al mercado solo "
+        "se le puede juzgar con miles de partidos, no con una temporada suelta. "
+        "Cuotas reales desde 2006; antes se asume la cuota estándar -110. "
+        "Los *push* (empate exacto con la línea) no cuentan como apuesta."
+    )
+
+    pl = {}
+    if len(apuestas_todas):
+        fav_local = apuestas_todas["favorito_local"]
+        resultado = {
+            "Favoritos ATS": (
+                apuestas_todas["home_spread_odds"].where(fav_local, apuestas_todas["away_spread_odds"]),
+                apuestas_todas["cubre_favorito"],
+            ),
+            "Underdogs ATS": (
+                apuestas_todas["away_spread_odds"].where(fav_local, apuestas_todas["home_spread_odds"]),
+                ~apuestas_todas["cubre_favorito"],
+            ),
+            "Over (más)": (apuestas_todas["over_odds"], apuestas_todas["over"]),
+            "Under (menos)": (apuestas_todas["under_odds"], ~apuestas_todas["over"]),
+        }
+        pl = {nombre: ganancia_apuesta(cuota, gano)
+              for nombre, (cuota, gano) in resultado.items()}
+
+        hold_ml = partidos["hold_ml"].dropna()
+        hold_sp = partidos["hold_spread"].dropna()
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(
+            "Ventaja casa (moneyline)",
+            f"{hold_ml.mean() * 100:.2f}%" if len(hold_ml) else "—",
+            border=True,
+            help="Margen medio de las cuotas de ganador (2006+): lo que se "
+                 "queda la casa apostando a los dos lados.",
+        )
+        m2.metric(
+            "Ventaja casa (spread)",
+            f"{hold_sp.mean() * 100:.2f}%" if len(hold_sp) else "—",
+            border=True,
+            help="Lo mismo con las cuotas de la línea.",
+        )
+        m3.metric(
+            "ROI a ciegas · favoritos",
+            f"{pl['Favoritos ATS'].mean() * 100:+.1f}%",
+            border=True,
+            help="Por cada $1 apostado a TODOS los favoritos contra el spread.",
+        )
+        m4.metric(
+            "ROI a ciegas · underdogs",
+            f"{pl['Underdogs ATS'].mean() * 100:+.1f}%",
+            border=True,
+            help="Por cada $1 apostado a TODOS los underdogs contra el spread.",
+        )
+
+        # Banca a largo plazo: LA lección central
+        banca = []
+        for nombre, serie in pl.items():
+            banca.append(pd.DataFrame({
+                "apuesta": range(1, len(serie) + 1),
+                "estrategia": nombre,
+                "ganancia": serie.cumsum().values,
+                "season": apuestas_todas["season"].values,
+                "week": apuestas_todas["week"].values,
+            }))
+        banca = pd.concat(banca, ignore_index=True)
+        fig = px.line(
+            banca, x="apuesta", y="ganancia", color="estrategia",
+            color_discrete_map={
+                "Favoritos ATS": "#4C9AFF", "Underdogs ATS": "#F2C14E",
+                "Over (más)": "#00C46A", "Under (menos)": "#B48EFF",
+            },
+            custom_data=["season", "week"],
+            title="La banca a largo plazo: apostar $1 a ciegas en cada partido",
+            labels={"apuesta": "Nº de apuesta (cronológico)",
+                    "ganancia": "Ganancia acumulada ($)", "estrategia": ""},
+        )
+        fig.update_traces(
+            line=dict(width=2.5),
+            hovertemplate="Apuesta nº %{x}<br><b>%{fullData.name}</b>"
+                          "<br>Acumulado: $%{y:.0f}"
+                          "<br>Temporada %{customdata[0]}, semana %{customdata[1]}"
+                          "<extra></extra>",
+        )
+        fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,.35)")
+        mostrar_grafica(fig, alto=480)
+        st.caption(
+            f"Resultado por cada $1 apostado a ciegas "
+            f"({int(apuestas_todas['season'].min())}–{int(apuestas_todas['season'].max())}): "
+            f"favoritos ATS **{pl['Favoritos ATS'].mean() * 100:+.1f}%**, "
+            f"underdogs ATS {pl['Underdogs ATS'].mean() * 100:+.1f}%, "
+            f"over {pl['Over (más)'].mean() * 100:+.1f}%, "
+            f"under {pl['Under (menos)'].mean() * 100:+.1f}%. "
+            f"Ninguna estrategia gana: la casa cobra por existir. Compara esta "
+            f"gráfica con la banca del modelo (pestaña 🎯) — ahí está la vara "
+            f"real de cualquier «sistema»."
+        )
+    else:
+        st.warning("Sin datos de apuestas disponibles (¿respaldo sin internet?).")
+
+    # ¿El precio acierta? (calibración del moneyline)
+    ml = partidos[partidos["prob_local_sin_vig"].notna()].copy()
+    ml["tramo"] = pd.cut(
+        ml["prob_local_sin_vig"], [0, .35, .45, .55, .65, 1],
+        labels=["<35%", "35–45%", "45–55%", "55–65%", ">65%"],
+    )
+    cal = (ml.groupby("tramo", observed=True)
+             .agg(implicita=("prob_local_sin_vig", "mean"),
+                  real=("gano_local", "mean"),
+                  n=("gano_local", "size"))
+             .reset_index())
+    fig = px.scatter(
+        cal, x="implicita", y="real", size="n", text="tramo",
+        title="¿El mercado se equivoca? Precio (sin vig) vs. victorias reales del local",
+        labels={"implicita": "Probabilidad implícita (sin vig)",
+                "real": "Victorias reales", "n": "Partidos"},
+    )
+    fig.update_traces(
+        textposition="top center",
+        customdata=cal[["n"]],
+        hovertemplate="%{x:.1%} implícita → %{y:.1%} real"
+                      "<br>Partidos: %{customdata[0]}<extra></extra>",
+    )
+    fig.add_trace(go.Scatter(
+        x=[0, 1], y=[0, 1], mode="lines",
+        line=dict(dash="dash", width=1, color="rgba(255,255,255,.5)"),
+        name="Si el mercado fuera perfecto", hoverinfo="skip",
+    ))
+    fig.update_xaxes(tickformat=".0%", range=[0, 1])
+    fig.update_yaxes(tickformat=".0%", range=[0, 1])
+    mostrar_grafica(fig)
+    st.caption(
+        "Cada punto es un tramo de probabilidad del moneyline (datos desde 2006). "
+        "Los puntos caen **sobre la diagonal**: el precio es casi una bola de "
+        "cristal. Batirlo de forma constante es mucho más difícil de lo que "
+        "sugieren los «expertos» de internet — y este dashboard incluye su "
+        "propio modelo para que lo compruebes con datos."
+    )
+
+    with st.expander("📚 La lección del dinero (vig, valor esperado y apofenia)"):
+        st.markdown(
+            """
+**¿Por qué el casino siempre gana?** Por el **margen de la casa** (*vig*).
+En una cuota `-110` arriesgas 110 para ganar 100: necesitas ~**52.4%**
+solo para empatar. El margen típico es **4–7%** por mercado.
+
+**Valor esperado (EV):**
+
+```
+EV = (prob. de ganar × ganancia) − (prob. de perder × pérdida)
+```
+
+Si el EV es negativo, por muchas rachas que tengas, a largo plazo pierdes.
+
+**Cuidado con las "tendencias" (la trampa más común):**
+
+- "Los underdogs en primetime ganan todo" puede ser **casualidad** de pocos
+  partidos, no un patrón real.
+- Esto se llama **apofenia**: ver patrones donde solo hay azar.
+- Con 50 lanzamientos de moneda, ver 30 caras es normal. No significa que
+  la moneda esté cargada.
+- En las gráficas, mira el **número de partidos** del tooltip: con n
+  pequeño, casi cualquier resultado es "normal".
+
+**Regla de oro:** antes de creer una tendencia, pregúntate:
+¿*cuántos* partidos son? ¿se repite en *varias* temporadas? ¿hay una
+*razón* (no solo el dato)?
+
+> Los picks del modelo sirven para **entender** el mercado y sus márgenes,
+> no para "vencerlo". El historial está ahí para que lo juzgues tú.
+            """
+        )
+
 
 st.divider()
 st.caption(
     "Datos: nflverse · Hecho con Python + Streamlit + Plotly. "
-    "Cambia de temporada en la barra lateral para comparar."
+    "Nada de esto es consejo de apuestas ni garantiza ganancias. "
+    "🔞 +18 · Juego responsable. Cambia de temporada en la barra lateral para comparar."
 )
