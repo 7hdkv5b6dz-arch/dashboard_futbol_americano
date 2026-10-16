@@ -18,6 +18,12 @@ necesitamos para el análisis:
       margen pronosticado) frente a la cuota real del mercado
     - REGISTRO de picks: estado real de cada pick (Pegó · No pegó · Push ·
       Pendiente), % de acierto y ROI por mercado, todo walk-forward
+    - REGISTRO FIEL de picks (congelado al emitirse): línea, cuota y
+      probabilidad EXACTAS del momento de la emisión (inmunes a los cambios
+      posteriores del mercado); los picks antiguos no capturados van marcados
+      como "reconstruido" (se recalculan con la línea actual)
+    - CALIDAD de las probabilidades: Brier, Log Loss y calibración frente al
+      mercado sin vig (una probabilidad que no dice la verdad no vale nada)
     - precios entre casas (The Odds API, opcional con clave gratuita): cuotas
       de la próxima jornada en varias casas deportivas, para comparar la
       comisión (vig) de cada una
@@ -26,6 +32,7 @@ Si no hay internet, cae de vuelta a los datos de ejemplo (data/partidos.csv).
 """
 
 from pathlib import Path
+from datetime import datetime
 import math
 
 import numpy as np
@@ -680,15 +687,32 @@ def _sigma_margen(residuos, ventana: int = 500, minimo: int = 100) -> float:
     return float(np.std(recientes, ddof=1))
 
 
+def sigma_actual(df_historicos_con_modelo: pd.DataFrame) -> tuple:
+    """(sigma del margen, sigma del total) con TODOS los errores disponibles.
+
+    Para emitir los picks de la jornada PENDIENTE: los errores de los partidos
+    ya jugados se conocen en ese momento, así que se usan enteros (misma
+    ventana y mínimo que `_sigma_margen`). Devuelve `(nan, nan)` si aún no hay
+    suficiente historia.
+    """
+    residuos_margen = (df_historicos_con_modelo["margen"]
+                       - df_historicos_con_modelo["margen_modelo"]).dropna().tolist()
+    residuos_total = (df_historicos_con_modelo["total_puntos"]
+                      - df_historicos_con_modelo["total_modelo"]).dropna().tolist()
+    return _sigma_margen(residuos_margen), _sigma_margen(residuos_total)
+
+
 def pronosticos_historicos(df_jugados: pd.DataFrame, ventana: int = 2,
                            rigidez: float = 2.0, minimo_partidos: int = 150) -> pd.DataFrame:
-    """Agrega `margen_modelo`, `total_modelo` y `sigma_modelo` a los jugados.
+    """Agrega `margen_modelo`, `total_modelo` y los dos sigmas a los jugados.
 
     Walk-forward: el pronóstico de cada partido usa solo partidos anteriores
     (los ratings se reajustan al empezar cada jornada). Si todavía no hay
-    suficiente historia, el pronóstico queda vacío (NaN). `sigma_modelo` es el
-    desvío de los errores recientes ANTES de cada partido (para las
-    probabilidades de moneyline); NaN hasta tener 150 errores acumulados.
+    suficiente historia, el pronóstico queda vacío (NaN). `sigma_modelo` y
+    `sigma_total_modelo` son los desvíos de los errores recientes ANTES de
+    cada jornada (para pasar los pronósticos a probabilidad); NaN hasta tener
+    100 errores acumulados. El sigma se CONGELA al empezar la jornada: un
+    partido del jueves nunca se usa para la probabilidad del domingo.
     """
     jugados = df_jugados[df_jugados["jugado"]].sort_values(
         ["season", "week"], kind="stable"
@@ -696,9 +720,13 @@ def pronosticos_historicos(df_jugados: pd.DataFrame, ventana: int = 2,
     equipos = sorted(set(jugados["home_team"]) | set(jugados["away_team"]))
     modelo = _ModeloPuntos(equipos, ventana=ventana, rigidez=rigidez)
 
-    margenes, totales, sigmas = [], [], []
-    residuos = []  # errores de pronósticos anteriores (margen real − modelo)
+    margenes, totales = [], []
+    sigmas_margen, sigmas_total = [], []
+    # Errores de pronósticos anteriores (real − modelo), por mercado:
+    residuos, residuos_total = [], []
     jornada_ajustada = None
+    sigma_jornada = float("nan")
+    sigma_total_jornada = float("nan")
     for season, week, local, visitante, margen, total in _columnas_modelo(jugados).itertuples(
         index=False, name=None
     ):
@@ -706,6 +734,9 @@ def pronosticos_historicos(df_jugados: pd.DataFrame, ventana: int = 2,
         if (season, week) != jornada_ajustada:
             if len(modelo.historial) >= minimo_partidos:
                 modelo.ajustar()
+            # Sigma congelado al EMPEZAR la jornada (sin fuga dentro de la semana)
+            sigma_jornada = _sigma_margen(residuos)
+            sigma_total_jornada = _sigma_margen(residuos_total)
             jornada_ajustada = (season, week)
         if len(modelo.historial) >= minimo_partidos:
             m, t = modelo.predecir(local, visitante)
@@ -713,15 +744,18 @@ def pronosticos_historicos(df_jugados: pd.DataFrame, ventana: int = 2,
             m, t = float("nan"), float("nan")
         margenes.append(m)
         totales.append(t)
-        sigmas.append(_sigma_margen(residuos))
+        sigmas_margen.append(sigma_jornada)
+        sigmas_total.append(sigma_total_jornada)
         if not math.isnan(m):
             residuos.append(margen - m)
+            residuos_total.append(total - t)
         modelo.agregar(season, local, visitante, margen, total)
 
     salida = jugados.copy()
     salida["margen_modelo"] = margenes
     salida["total_modelo"] = totales
-    salida["sigma_modelo"] = sigmas
+    salida["sigma_modelo"] = sigmas_margen
+    salida["sigma_total_modelo"] = sigmas_total
     return salida
 
 
@@ -781,6 +815,84 @@ def probabilidades_ml(margen_modelo, sigma_modelo):
     return p_local, 1.0 - p_local
 
 
+def probabilidad_supera(valor_modelo, linea, sigma):
+    """P(valor real > línea) con una normal centrada en el pronóstico.
+
+    Sirve para pasar el margen pronosticado a probabilidad de CUBRIR el
+    spread (`valor_modelo=margen_modelo`, `linea=spread_line`) y el total
+    pronosticado a probabilidad de MÁS (over). Es una aproximación continua:
+    los empujes exactos (push) valen ~2% y se tratan aparte en la evaluación.
+    """
+    v = pd.to_numeric(pd.Series(valor_modelo), errors="coerce").astype(float)
+    l = pd.to_numeric(pd.Series(linea), errors="coerce").astype(float)
+    s = pd.to_numeric(pd.Series(sigma), errors="coerce").astype(float)
+    p = pd.Series(_phi(((v - l) / s).to_numpy()), index=v.index)
+    return p.mask(v.isna() | l.isna() | s.isna() | (s <= 0))
+
+
+# ---------------------------------------------------------------------------
+# CALIDAD DE LAS PROBABILIDADES (Brier, Log Loss y calibración)
+# ---------------------------------------------------------------------------
+# Una probabilidad solo sirve si dice la verdad: si el modelo dice 60% y esos
+# partidos se ganan 40% de las veces, la probabilidad ENGAÑA (y cualquier
+# "valor esperado" calculado con ella también). Brier y Log Loss miden ese
+# error en número (menor = mejor): decir 50% a todo da Brier 0.25.
+def _prob_y_resultado(probabilidad, resultado):
+    """Limpia un par (probabilidad, resultado 0/1) y descarta los vacíos."""
+    p = pd.to_numeric(pd.Series(probabilidad), errors="coerce").astype(float)
+    y = pd.to_numeric(pd.Series(resultado), errors="coerce").astype(float)
+    valido = p.notna() & y.notna() & ((y == 0) | (y == 1))
+    return p[valido], y[valido]
+
+
+def brier_score(probabilidad, resultado) -> float:
+    """Error cuadrático medio de una probabilidad binaria (menor = mejor).
+
+    `resultado` va en 0/1; push y pendientes (vacíos) se descartan. NaN si no
+    queda ningún caso evaluable.
+    """
+    p, y = _prob_y_resultado(probabilidad, resultado)
+    if not len(p):
+        return float("nan")
+    return float(((p - y) ** 2).mean())
+
+
+def log_loss(probabilidad, resultado, epsilon: float = 1e-12) -> float:
+    """−log-verosimilitud media de una probabilidad binaria (menor = mejor).
+
+    Decir 50% a todo da 0.6931. Se recortan 0 y 1 para evitar log(0).
+    """
+    p, y = _prob_y_resultado(probabilidad, resultado)
+    if not len(p):
+        return float("nan")
+    p = p.clip(epsilon, 1.0 - epsilon)
+    return float(-(y * np.log(p) + (1.0 - y) * np.log(1.0 - p)).mean())
+
+
+def tabla_calibracion(probabilidad, resultado,
+                      cortes=(0.0, 0.35, 0.45, 0.50, 0.55, 0.65, 1.0)) -> pd.DataFrame:
+    """Probabilidad dicha vs frecuencia real, por tramos.
+
+    Devuelve una fila por tramo: cuántos casos hay (`n`), la probabilidad
+    media dicha (`prob_media`), la frecuencia real (`real`) y su diferencia
+    (`diferencia`; negativa = la probabilidad se pasó de lista). Para pintar
+    la curva de calibración. Push y pendientes se descartan.
+    """
+    columnas = ["tramo", "desde", "hasta", "n", "prob_media", "real", "diferencia"]
+    p, y = _prob_y_resultado(probabilidad, resultado)
+    if not len(p):
+        return pd.DataFrame(columns=columnas)
+    tramo = pd.cut(p, bins=list(cortes))
+    res = (pd.DataFrame({"tramo": tramo, "p": p, "y": y})
+           .groupby("tramo", observed=True)
+           .agg(n=("y", "size"), prob_media=("p", "mean"), real=("y", "mean"))
+           .reset_index())
+    res["diferencia"] = res["real"] - res["prob_media"]
+    res["desde"] = res["tramo"].map(lambda t: float(t.left))
+    res["hasta"] = res["tramo"].map(lambda t: float(t.right))
+    return res[columnas]
+
+
 def evaluar_picks_ml(df: pd.DataFrame, umbral: float = 0.04) -> pd.DataFrame:
     """Picks del modelo al ganador (moneyline), con su resultado.
 
@@ -789,6 +901,7 @@ def evaluar_picks_ml(df: pd.DataFrame, umbral: float = 0.04) -> pd.DataFrame:
     puntos porcentuales) y el partido trae cuota real. Necesita `margen_modelo`,
     `sigma_modelo` y las cuotas `home_moneyline`/`away_moneyline` (de
     `_preparar`). En empate: push (apuesta nula, no cuenta como acierto).
+    La salida ya trae `prob_modelo` y `prob_mercado` DEL LADO DEL PICK.
     """
     d = df[
         df["margen_modelo"].notna() & df["sigma_modelo"].notna()
@@ -801,6 +914,8 @@ def evaluar_picks_ml(df: pd.DataFrame, umbral: float = 0.04) -> pd.DataFrame:
     d["edge"] = d["prob_local_modelo"] - d["prob_local_sin_vig"]
     d = d[d["edge"].abs() >= umbral].copy()
     d["al_local"] = d["edge"] > 0
+    d["prob_modelo"] = d["prob_local_modelo"].where(d["al_local"], d["prob_visitante_modelo"])
+    d["prob_mercado"] = d["prob_local_sin_vig"].where(d["al_local"], 1.0 - d["prob_local_sin_vig"])
     d["pick"] = d["home_team"].where(d["al_local"], d["away_team"])
     d["cuota"] = d["home_moneyline"].where(d["al_local"], d["away_moneyline"])
     gano_local = d["gano_local"].astype("boolean")
@@ -870,3 +985,213 @@ def resumen_picks(registro: pd.DataFrame, columna_mercado: str = "mercado") -> p
             "pct_acierto": pct, "roi": roi,
         })
     return pd.DataFrame(filas)
+
+
+# ---------------------------------------------------------------------------
+# REGISTRO FIEL DE PICKS (congelado al emitirse — auditoría honesta)
+# ---------------------------------------------------------------------------
+# A partir de esta versión, los picks de la jornada pendiente se pueden
+# CONGELAR: se guarda una fotografía con la línea, la cuota y las
+# probabilidades EXACTAS del momento de la emisión (data/registro_picks.csv).
+# Que el mercado mueva las líneas después NO reescribe nada: el archivo es de
+# solo-añadir y ante un id repetido siempre gana la PRIMERA captura.
+#
+# El resultado (¿pegó?) no se guarda: se deriva al leer, con la línea
+# CONGELADA y el marcador real, así que es determinista y comprobable. Los
+# picks anteriores a este sistema no se pueden recuperar: la app los marca
+# como "🧮 Reconstruido" (se recalculan con la línea actual) y solo lo
+# capturado lleva el sello "📌 Capturado".
+VERSION_MODELO = "srs-v1"  # Súbela si cambia el modelo (ventana, rigidez, sigma...)
+RUTA_REGISTRO_PICKS = BASE / "registro_picks.csv"
+COLUMNAS_REGISTRO_PICKS = [
+    "id", "capturado_en", "temporada", "semana", "game_id", "equipo_local",
+    "equipo_visitante", "mercado", "lado", "seleccion", "linea", "cuota",
+    "prob_modelo", "prob_implicita", "prob_sin_vig", "edge", "ev",
+    "version_modelo",
+]
+# Columnas comunes que debe traer el DataFrame de entrada (las arma la app):
+# `linea_num`, `edge_num` y `prob_mercado` son números; `seleccion` es texto.
+COLUMNAS_ENTRADA_REGISTRO = (
+    "temporada", "semana", "game_id", "equipo_local", "equipo_visitante",
+    "mercado", "lado", "seleccion", "linea_num", "cuota", "prob_modelo",
+    "prob_mercado", "edge_num",
+)
+
+
+def registro_desde_picks(picks: pd.DataFrame, momento=None,
+                         version: str = VERSION_MODELO) -> pd.DataFrame:
+    """Jornada pendiente (columnas comunes de la pestaña 📋) → registro fiel.
+
+    Copia la línea, la cuota y las probabilidades LITERALMENTE (sin redondear
+    ni inventar) y calcula lo derivado: `id` (temporada|semana|game_id|mercado|
+    lado), probabilidad implícita (con vig) y `ev` ($ por $1, aproximado: los
+    empujes valen ~0 y no se descuentan). Sin cuota real, `prob_implicita` y
+    `ev` quedan VACÍOS: aquí no se asume −110 nunca. Unidades del edge:
+    spread/totales en puntos; moneyline en puntos de probabilidad (0–1).
+    """
+    if picks is None or not len(picks):
+        return pd.DataFrame(columns=COLUMNAS_REGISTRO_PICKS)
+    faltan = [c for c in COLUMNAS_ENTRADA_REGISTRO if c not in picks.columns]
+    if faltan:
+        raise ValueError(f"Faltan columnas para el registro fiel: {faltan}")
+    momento = momento or datetime.now().isoformat(timespec="seconds")
+
+    cuota = pd.to_numeric(picks["cuota"], errors="coerce")
+    prob_modelo = pd.to_numeric(picks["prob_modelo"], errors="coerce")
+    pago = (cuota / 100.0).where(cuota > 0, 100.0 / -cuota)
+    ev = (prob_modelo * pago - (1.0 - prob_modelo)).where(
+        cuota.notna() & prob_modelo.notna())
+
+    registro = pd.DataFrame({
+        "id": (picks["temporada"].astype(int).astype(str) + "|"
+               + picks["semana"].astype(int).astype(str) + "|"
+               + picks["game_id"].astype(str) + "|"
+               + picks["mercado"].astype(str) + "|"
+               + picks["lado"].astype(str)),
+        "capturado_en": momento,
+        "temporada": picks["temporada"].astype(int),
+        "semana": picks["semana"].astype(int),
+        "game_id": picks["game_id"].astype(str),
+        "equipo_local": picks["equipo_local"].astype(str),
+        "equipo_visitante": picks["equipo_visitante"].astype(str),
+        "mercado": picks["mercado"].astype(str),
+        "lado": picks["lado"].astype(str),
+        "seleccion": picks["seleccion"].astype(str),
+        "linea": pd.to_numeric(picks["linea_num"], errors="coerce"),
+        "cuota": cuota,
+        "prob_modelo": prob_modelo,
+        "prob_implicita": _prob_implicita(cuota),
+        "prob_sin_vig": pd.to_numeric(picks["prob_mercado"], errors="coerce"),
+        "edge": pd.to_numeric(picks["edge_num"], errors="coerce"),
+        "ev": ev,
+        "version_modelo": version,
+    })
+    return registro[COLUMNAS_REGISTRO_PICKS].reset_index(drop=True)
+
+
+def cargar_registro_picks(ruta=None) -> pd.DataFrame:
+    """Lee el registro fiel del disco (vacío si todavía no existe).
+
+    `ruta=None` usa `RUTA_REGISTRO_PICKS` (permite apuntar a otro archivo en
+    verificación y pruebas).
+    """
+    ruta = Path(ruta) if ruta is not None else RUTA_REGISTRO_PICKS
+    if not ruta.exists():
+        return pd.DataFrame(columns=COLUMNAS_REGISTRO_PICKS)
+    registro = pd.read_csv(ruta, dtype={"game_id": str})
+    if "capturado_en" in registro:
+        registro["capturado_en"] = registro["capturado_en"].astype(str)
+    for columna in COLUMNAS_REGISTRO_PICKS:
+        if columna not in registro:
+            registro[columna] = float("nan")
+    return registro[COLUMNAS_REGISTRO_PICKS]
+
+
+def unir_registro_fiel(nuevas: pd.DataFrame, existente: pd.DataFrame) -> pd.DataFrame:
+    """Une picks nuevos SIN reescribir los ya capturados: gana el PRIMERO.
+
+    Es la garantía central del registro: una vez congelada una emisión, volver
+    a capturar el mismo pick (mismo id) — aunque la línea o la cuota hayan
+    cambiado — no altera nada de lo guardado.
+    """
+    if existente is None or not len(existente):
+        columnas = COLUMNAS_REGISTRO_PICKS
+        if nuevas is None or not len(nuevas):
+            return pd.DataFrame(columns=columnas)
+        return nuevas.drop_duplicates("id", keep="first").reset_index(drop=True)
+    if nuevas is None or not len(nuevas):
+        return existente.copy()
+    total = pd.concat([existente, nuevas], ignore_index=True)
+    return total.drop_duplicates("id", keep="first").reset_index(drop=True)
+
+
+def guardar_registro_picks(registro: pd.DataFrame, ruta=None) -> Path:
+    """Escribe el registro fiel en disco (CSV legible; vacíos = celda vacía)."""
+    ruta = Path(ruta) if ruta is not None else RUTA_REGISTRO_PICKS
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    registro.to_csv(ruta, index=False, na_rep="")
+    return ruta
+
+
+def capturar_registro_picks(nuevas: pd.DataFrame, ruta=None) -> tuple:
+    """Congela los picks nuevos y devuelve `(registro_total, nuevos, repetidos)`.
+
+    Solo escribe si hay algo nuevo que añadir (el archivo no se reescribe por
+    gusto). `ruta=None` usa el registro del proyecto.
+    """
+    existente = cargar_registro_picks(ruta)
+    repetidos = 0
+    if nuevas is not None and len(nuevas) and len(existente):
+        repetidos = int(nuevas["id"].isin(existente["id"]).sum())
+    total = unir_registro_fiel(nuevas, existente)
+    nuevos = len(total) - len(existente)
+    if nuevos:
+        guardar_registro_picks(total, ruta)
+    return total, nuevos, repetidos
+
+
+def evaluar_registro_fiel(registro: pd.DataFrame, calendario: pd.DataFrame) -> pd.DataFrame:
+    """Resultado real de cada pick capturado, con su LÍNEA CONGELADA.
+
+    Une por `game_id` con el marcador real y decide Pegó / No pegó / Push /
+    Pendiente usando lo capturado (el mercado puede haber movido la línea; da
+    igual). `ganancia` ($ por $1) queda vacía si el partido no se ha jugado o
+    si no había cuota real capturada: nunca se asume −110 aquí.
+    """
+    reg = registro.copy()
+    if not len(reg):
+        for columna, tipo in (("jugado", "bool"), ("gano", "boolean"),
+                              ("estado", "object"), ("ganancia", "float")):
+            reg[columna] = pd.Series(dtype=tipo)
+        return reg
+
+    reg["game_id"] = reg["game_id"].astype(str)
+    if calendario is None or not len(calendario):
+        reg["home_score"] = float("nan")
+        reg["away_score"] = float("nan")
+    else:
+        marcadores = (calendario.drop_duplicates("game_id")
+                      .assign(game_id=lambda d: d["game_id"].astype(str))
+                      .set_index("game_id")[["home_score", "away_score"]])
+        reg = reg.join(marcadores, on="game_id")
+
+    home = pd.to_numeric(reg["home_score"], errors="coerce")
+    away = pd.to_numeric(reg["away_score"], errors="coerce")
+    margen = home - away
+    total_puntos = home + away
+    jugado = margen.notna()
+
+    lado = reg["lado"].astype(str)
+    linea = pd.to_numeric(reg["linea"], errors="coerce")
+    es_spread = reg["mercado"].eq("Spread")
+    es_total = reg["mercado"].eq("Total")
+    es_ml = reg["mercado"].eq("Moneyline")
+
+    # Diferencia desde la perspectiva del pick (línea capturada = su perspectiva):
+    dif_spread = margen.where(lado.eq("local"), -margen) + linea
+    dif_total = (total_puntos - linea).where(lado.eq("over"), linea - total_puntos)
+    gano_ml = (margen > 0).where(lado.eq("local"), margen < 0)
+
+    push = ((es_spread & jugado & dif_spread.eq(0))
+            | (es_total & jugado & dif_total.eq(0))
+            | (es_ml & jugado & margen.eq(0)))
+    gano = pd.Series(pd.NA, dtype="boolean", index=reg.index)
+    gano[es_spread & jugado] = dif_spread[es_spread & jugado] > 0
+    gano[es_total & jugado] = dif_total[es_total & jugado] > 0
+    gano[es_ml & jugado] = gano_ml[es_ml & jugado]
+    gano = gano.mask(push)
+    jugado = jugado.astype(bool)
+
+    cuota = pd.to_numeric(reg["cuota"], errors="coerce")
+    pago = (cuota / 100.0).where(cuota > 0, 100.0 / -cuota)
+    ganancia = pd.Series(float("nan"), index=reg.index)
+    con_pago = jugado & ~push & cuota.notna()
+    ganancia[con_pago] = pago[con_pago].where(gano[con_pago].fillna(False), -1.0)
+    ganancia[push] = 0.0
+
+    resultado = reg.drop(columns=["home_score", "away_score"])
+    resultado["jugado"] = jugado
+    resultado["gano"] = gano
+    resultado["estado"] = estado_picks(gano, jugado)
+    resultado["ganancia"] = ganancia
+    return resultado.reset_index(drop=True)

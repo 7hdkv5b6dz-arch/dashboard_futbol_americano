@@ -34,10 +34,11 @@ el *vig*.** 🔞 Solo para +18.
 |---|---|
 | `app.py` | La app de Streamlit (UI + gráficas), 8 pestañas / 23 gráficas |
 | `datos.py` | Descarga, preparación, **modelo de pronósticos** (SRS walk-forward) y **precios entre casas** (The Odds API) |
-| `tests/test_datos.py` | Pruebas básicas (38) de `datos.py` |
+| `tests/test_datos.py` | Pruebas (60) de `datos.py` |
 | `.streamlit/secrets.toml` | Clave de The Odds API (local, NO se sube; en `.gitignore`) |
 | `data/nfl_games.csv` | Caché de partidos y líneas (se baja sola; NO se sube) |
 | `data/equipos.csv` | Nombres y colores de equipos (NO se sube) |
+| `data/registro_picks.csv` | **Registro fiel**: picks congelados al emitirse (se crea al pulsar «📌 Congelar»; SÍ se sube — es la memoria del proyecto) |
 | `data/partidos.csv` | Respaldo de ejemplo si no hay internet (sí se sube) |
 | `requirements.txt` | Librerías (majors con tope para que la nube no rompa) |
 | `.streamlit/config.toml` | Tema visual (oscuro) del dashboard |
@@ -94,6 +95,12 @@ Se abre en `http://localhost:8501`. (No se corre en Thonny: es app web.)
      resultado del último partido no altera pronósticos anteriores).
    - `pronosticos_historicos()` (para el historial) y `pronosticos_futuros()`
      (jornada pendiente, solo partidos con línea publicada).
+   - **σ congelado por jornada (fix 16/10/2026):** `sigma_modelo` (margen) y
+     `sigma_total_modelo` (total) se calculan con los errores previos al
+     EMPEZAR cada jornada y no cambian dentro de la semana (antes el primer
+     partido del jueves informaba la probabilidad del domingo: micro-fuga).
+     Para la jornada pendiente: `datos.sigma_actual(hist)` (todos los errores
+     jugados hasta hoy). Réplica independiente en el laboratorio: diff 0.00.
 6. **Picks:** se emiten solo cuando |pronóstico − línea| ≥ **umbral de edge**
    (control en la app: 1.0–4.0, por defecto 2.0). Cuotas **reales** de nflverse
    desde 2006; antes se asume −110. Los picks usan la línea de cierre disponible.
@@ -105,7 +112,7 @@ Se abre en `http://localhost:8501`. (No se corre en Thonny: es app web.)
    comentarios en español. (El usuario viene de ejercicios tipo `S12_01`.)
 9. **Verificación obligatoria antes de dar algo por bueno** (el usuario lo pide):
    - `python -m py_compile app.py datos.py`
-   - `.venv/bin/python -m unittest discover -s tests -t .` (38/38 en verde)
+   - `.venv/bin/python -m unittest discover -s tests -t .` (60/60 en verde)
    - **AppTest** de Streamlit sin excepciones:
      `AppTest.from_file("app.py", default_timeout=180).run()` (con
      `at.select_slider[0].set_value(...)` para probar umbrales).
@@ -136,9 +143,31 @@ Se abre en `http://localhost:8501`. (No se corre en Thonny: es app web.)
     - Se muestra el historial completo walk-forward (ROI, acierto, banca):
       *spread* ~50% ATS con ROI ≈ −2% a −3.6% según umbral (mejor que
       apostar a ciegas al favorito, −5.4%, pero aún negativo); totales ~51%
-      con ROI ≈ −0.7%.
+      con ROI ≈ −0.7%; moneyline 42.2% con ROI −5.5%.
     - Se enseña explícitamente que **más edge NO garantiza más acierto**.
     - Prohibido: prometer ganancias, ocultar resultados, "picks infalibles".
+13. **Registro fiel de picks y calidad de las probabilidades (16/10/2026):**
+    - Al pulsar **«📌 Congelar»** (pestaña 📋) se guarda una **fotografía
+      inmutable** de los picks pendientes en `data/registro_picks.csv`: id,
+      partido, mercado, lado, selección, línea, cuota real, prob. modelo,
+      implícita, **sin vig**, **EV**, edge, versión del modelo, temporada,
+      semana y momento de captura.
+    - El archivo es **solo-añadir**: recapturar NO reescribe nada (dedupe por
+      `id = temporada|semana|game_id|mercado|lado`; gana la PRIMERA captura).
+    - El **resultado se deriva al leer** con la **línea CONGELADA** (nunca la
+      de hoy): el pick se juzga como se emitió.
+    - Sin cuota real, `prob_implicita` y `ev` quedan **vacíos** (jamás un −110
+      inventado); el ROI del registro solo promedia lo resuelto con cuota.
+    - `VERSION_MODELO = "srs-v1"`: súbela si cambia el modelo (ventana,
+      rigidez, σ…). Los picks previos a esta función van marcados
+      **🧮 Reconstruido** (se recalculan con la línea actual) y NUNCA se
+      mezclan con los fieles sin avisar.
+    - Métricas de probabilidad (misma sección 📋): **Brier**, **Log Loss** y
+      **curva de calibración** del modelo vs. el **mercado sin vig** (sobre
+      todos los partidos jugados desde 2006). El mercado es el listón: hoy el
+      modelo NO lo bate (Brier: spread 0.2645 vs 0.2501; total 0.2617 vs
+      0.2501; ML 0.2268 vs 0.2117) y en picks está claramente sobreconfiado
+      (dice 57% y pega 39%). Nada de EV ni "valor" sin calibración decente.
 
 ## 🎨 Guía de diseño (que cualquier IA lea esto antes de tocar la vista)
 
@@ -191,8 +220,19 @@ Tema: oscuro, tipo "noche de estadio". Lo fija `.streamlit/config.toml`.
   pick (✅ Pegó / ❌ No pegó / ➖ Push / ⏳ Pendiente), marcador de la jornada,
   **% de acierto y ROI por mercado**, acumulado de la temporada 2026 y del
   histórico desde 2006, con filtros por temporada, equipo y mercado. Resultado
-  honesto inicial: **ML 42.3 % de acierto y ROI −5.2 %** (3 861 picks desde
+  honesto inicial: **ML 42.2 % de acierto y ROI −5.5 %** (3 861 picks desde
   2006) — el modelo tampoco le gana al mercado.
+- ✅ **Bloque 1+2 de la auditoría (16/10/2026)**: **registro fiel** (📌 congelar
+  picks con su línea/cuota del momento; solo-añadir; resultado con la línea
+  congelada; los viejos van marcados 🧮 Reconstruido) + **calidad de las
+  probabilidades** en 📋 (tabla **Brier/Log Loss** vs el mercado sin vig y
+  **curva de calibración** con selector de mercado) + **fix de micro-fuga del
+  σ** (congelado al empezar cada jornada; `sigma_total_modelo` nuevo). Números
+  medidos: Brier modelo/mercado → spread 0.2645/0.2501 · total 0.2617/0.2501 ·
+  ML 0.2268/0.2117 (menor = mejor); el mercado sin vig está casi clavado
+  (±3 pp) y el modelo queda sobreconfiado en los picks. Línea base tras el
+  fix: spread 2.0 → 50.2 %, ROI −2.2 % (t=−1.33); total 2.0 → 51.2 %,
+  −0.5 % (t=−0.29); ML 4pp → 42.2 %, −5.5 % (t=−2.62).
 - ✅ **8 pestañas / 23 gráficas**: 🎯 Picks del modelo · 📋 Registro de picks ·
   📈 ATS por equipo · 🎲 Totales y clima · 🧮 Números clave · 💰 Mercado y vig ·
   🛒 Precios entre casas · 📊 Temporadas.
@@ -209,16 +249,20 @@ Tema: oscuro, tipo "noche de estadio". Lo fija `.streamlit/config.toml`.
 - ✅ Mapa de calor ATS equipo × semana, ATS por tamaño de línea, totales por
   equipo y efecto del viento/temperatura.
 - ✅ Botón **🔄 Actualizar líneas** con fecha de última descarga.
-- ✅ **49 tests** en `tests/test_datos.py` (cuotas/vig, spread, push, totales,
+- ✅ **60 tests** en `tests/test_datos.py` (cuotas/vig, spread, push, totales,
   primetime 1999–2005, resumen por temporada, respaldo offline, **no fuga de
-  futuro** del modelo, **precios entre casas** con `mock` y los nuevos: sigma
-  walk-forward del margen, probabilidades y picks de **moneyline**, estado de
-  los picks (¿pegó?/push/pendiente, incluido el empate en ML) y la aritmética
-  del **registro** (% de acierto, ROI, pendientes)).
+  futuro** del modelo, **precios entre casas** con `mock`, sigma walk-forward y
+  **σ congelado por jornada** del margen y del total, probabilidades y picks de
+  **moneyline**, estado de los picks (¿pegó?/push/pendiente, incluido el empate
+  en ML), la aritmética del **registro** (% de acierto, ROI, pendientes), y los
+  nuevos: **Brier, Log Loss, calibración, `probabilidad_supera`** y el
+  **registro fiel** (columnas/derivados, dedupe congelado, resultado con línea
+  congelada, 3 mercados + push + sin cuota, ida y vuelta de fichero)).
 - ✅ Verificado con **AppTest** (0 excepciones, incluidos cambios de umbral;
-  16/10/2026: 8 pestañas y el registro con 0 excepciones) y **Lighthouse con
-  accesibilidad 1.00**; consola del navegador sin errores y captura de la
-  pestaña 📋 tomada.
+  16/10/2026: 8 pestañas, secciones nuevas de 📋 y el **botón 📌 Congelar
+  probado de verdad** contra un registro temporal: 46 picks capturados, el
+  segundo clic no duplica ni reescribe) y **Lighthouse con accesibilidad 1.00**;
+  consola del navegador sin errores y capturas de las secciones nuevas.
 - ✅ README reescrito (enfoque apuestas + pasos de publicación) y CONTEXTO al día.
 - ✅ Subido a GitHub. La publicación en **Streamlit Cloud queda EN PAUSA por
   decisión del usuario** (16/10/2026): el código y los pasos del README están
@@ -228,8 +272,12 @@ Tema: oscuro, tipo "noche de estadio". Lo fija `.streamlit/config.toml`.
 ~49.5% (el mercado es casi perfecto); *vig* del moneyline ~2.75%; apostar a
 ciegas al favorito pierde ~5.4% por apuesta; los picks del modelo (~50% ATS,
 ROI algo negativo) **no** son una máquina de ganar: muestran que batir al
-mercado es dificilísimo. En primetime 2026 los underdogs ganaron ~62% (10/16)
-vs ~35% en la temporada completa: buena lección de muestras pequeñas.
+mercado es dificilísimo. **El mercado sin vig es el listón medible**: su
+calibración está clavada (±3 pp) y su Brier (0.25/0.21) bate al del modelo en
+los tres mercados; en los picks el modelo está sobreconfiado (ML: dice
+55–60%, pega 39%). Más edge del modelo **no** mejora el acierto (ML con 15+ pp
+de edge: 38%). En primetime 2026 los underdogs ganaron ~62% (10/16) vs ~35% en
+la temporada completa: buena lección de muestras pequeñas.
 
 ## Backlog (pendiente) — ideas para seguir optimizando
 
@@ -237,6 +285,21 @@ vs ~35% en la temporada completa: buena lección de muestras pequeñas.
       detalle en `PROMPT_NUEVO_CHAT.md` (sección «LA MISIÓN»).
       - [x] **Fase 1 (16/10/2026): ML + pestaña 📋 Registro/auditoría de
         picks** (spread, totales y moneyline; 49 tests; AppTest 0 excepciones).
+      - [x] **Bloque 1+2 de la auditoría (16/10/2026)**: registro fiel de picks
+        (📌 congelar, solo-añadir, resultado con línea congelada) + métricas de
+        probabilidad (Brier/LogLoss/calibración vs mercado en 📋) + fix del σ
+        congelado por jornada. 60 tests; AppTest con el botón probado contra un
+        registro temporal; laboratorio (`base_actual.py`) actualizado.
+      - [ ] **Bloque 3 (siguiente): comparar modelos con holdout**
+        walk-forward honesto (¿alguna variante —ventana, rigidez, σ— bate al
+        anterior en temporadas no usadas para elegir?; decidir con antelación y
+        documentar la selección para no engañarse).
+      - [ ] **Bloque 4: filtros por EV y probabilidad alta** (dos objetivos
+        separados: prob. alta vs. EV+ con break-even 1/d, push-aware; sin
+        promesas: si no hay ventaja, cero picks).
+      - [ ] **Bloque 5: UI final por pick** (mercado/selección, línea+cuota,
+        prob. estimada, break-even, EV, edge, incertidumbre, muestra, motivos,
+        hora y versión; 4 estados: prob. alta / EV+ / ambos / sin ventaja).
       - [ ] **Fase 2: props de jugadores** walk-forward (anytime TD, yardas por
         tierra, pases de TD, yardas de pase del QB, recepciones/yardas de
         recepción; ventana móvil + encogimiento, Poisson para los TDs).
@@ -261,7 +324,7 @@ vs ~35% en la temporada completa: buena lección de muestras pequeñas.
       → pestaña 📊 Temporadas (2020–hoy).
 - [ ] Gráficas de **rachas** y **diferencia de puntos** por equipo.
 - [x] Mejorar el diseño/colores y hacerlo responsive.
-- [x] Añadir pruebas (tests) básicas → 38 tests, incluido "sin fuga de futuro".
+- [x] Añadir pruebas (tests) básicas → 60 tests, incluido "sin fuga de futuro".
 - [x] Verificar que `primetime` capture bien todos los casos.
       (Único pendiente: los jueves de 1999, que en la fuente no traen hora.)
 - [x] Mapa de calor de aciertos por equipo/semana.

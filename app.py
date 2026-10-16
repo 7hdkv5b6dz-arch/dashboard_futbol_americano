@@ -154,7 +154,8 @@ def evaluar_spread(df, umbral):
 
     Elige el lado (local con `edge > 0`, visitante con `edge < 0`) cuando la
     ventaja estimada llega al `umbral`. Los push quedan como apuesta nula
-    (ganancia $0, no cuentan como acierto).
+    (ganancia $0, no cuentan como acierto). Añade `prob_modelo` y
+    `prob_mercado` DEL LADO DEL PICK (el mercado sin vig, como referencia).
     """
     d = df[df["margen_modelo"].notna() & df["spread_line"].notna()].copy()
     d["edge"] = d["margen_modelo"] - d["spread_line"]
@@ -166,11 +167,21 @@ def evaluar_spread(df, umbral):
     d["gano"] = d["gano"].mask(d["push_spread"].fillna(False))  # push: sin juicio
     d["cuota"] = d["home_spread_odds"].where(d["al_local"], d["away_spread_odds"])
     d["ganancia"] = ganancia_apuesta(d["cuota"], d["gano"]).where(d["gano"].notna(), 0.0)
+    if "sigma_modelo" in d.columns:
+        p_cubre_local = datos.probabilidad_supera(
+            d["margen_modelo"], d["spread_line"], d["sigma_modelo"])
+        d["prob_modelo"] = p_cubre_local.where(d["al_local"], 1.0 - p_cubre_local)
+        p_merc = d["prob_local_spread_sin_vig"]
+        d["prob_mercado"] = p_merc.where(d["al_local"], 1.0 - p_merc)
     return d
 
 
 def evaluar_totales(df, umbral):
-    """Picks del modelo en el total (más/menos), ya calificados."""
+    """Picks del modelo en el total (más/menos), ya calificados.
+
+    Añade `prob_modelo` (probabilidad normal del lado elegido) y
+    `prob_mercado` (el sin vig del mercado), ambas del lado del pick.
+    """
     d = df[df["total_modelo"].notna() & df["total_line"].notna()].copy()
     d["edge"] = d["total_modelo"] - d["total_line"]
     d = d[d["edge"].abs() >= umbral].copy()
@@ -180,6 +191,14 @@ def evaluar_totales(df, umbral):
     d["gano"] = d["over"].where(d["al_over"], ~d["over"])
     d["cuota"] = d["over_odds"].where(d["al_over"], d["under_odds"])
     d["ganancia"] = ganancia_apuesta(d["cuota"], d["gano"]).where(d["gano"].notna(), 0.0)
+    if "sigma_total_modelo" in d.columns:
+        p_over = datos.probabilidad_supera(
+            d["total_modelo"], d["total_line"], d["sigma_total_modelo"])
+        d["prob_modelo"] = p_over.where(d["al_over"], 1.0 - p_over)
+        po = datos._prob_implicita(d["over_odds"])
+        pu = datos._prob_implicita(d["under_odds"])
+        p_merc = po / (po + pu)
+        d["prob_mercado"] = p_merc.where(d["al_over"], 1.0 - p_merc)
     return d
 
 
@@ -862,7 +881,10 @@ with tab_registro:
         "marcador y el **% de acierto por mercado**. Cada pick se emitió "
         "*walk-forward* (sin ver el futuro); aquí solo se comprueba qué pasó. "
         "Los partidos que aún no se juegan quedan **pendientes** hasta que se "
-        "jueguen y pulses **🔄 Actualizar líneas**."
+        "jueguen y pulses **🔄 Actualizar líneas**. Los picks nuevos se pueden "
+        "**congelar al emitirse** (📌 registro fiel, con su línea exacta de "
+        "aquel momento); los antiguos van marcados **🧮 Reconstruido** porque "
+        "se recalculan con la línea actual — se mezclan lo menos posible."
     )
 
     c1, c2 = st.columns(2)
@@ -884,13 +906,25 @@ with tab_registro:
     }
 
     era_reg = hist_picks[hist_picks["season"] >= 2006].copy()
-    sigma_serie = era_reg["sigma_modelo"].dropna()
-    sigma_hoy = float(sigma_serie.iloc[-1]) if len(sigma_serie) else float("nan")
+    sigma_hoy, sigma_total_hoy = datos.sigma_actual(era_reg)
     futuros_reg = picks_futuros.copy()
     futuros_reg["sigma_modelo"] = sigma_hoy
+    futuros_reg["sigma_total_modelo"] = sigma_total_hoy
 
-    def _bloque_registro(picks, mercado, texto_pick, lineas, edges, jugado):
-        """Normaliza un bloque de picks evaluados a las columnas del registro."""
+    def _bloque_registro(picks, mercado, lado, texto_pick, lineas, lineas_num,
+                         edges, edges_num, jugado):
+        """Normaliza un bloque de picks a las columnas del registro.
+
+        Además de lo visible (pick, línea y edge ya formateados), conserva lo
+        NUMÉRICO (lado, línea, edge, probabilidades y game_id): es lo que viaja
+        al registro fiel cuando se congelan los picks.
+        """
+        prob_modelo = (pd.to_numeric(picks["prob_modelo"], errors="coerce")
+                       if "prob_modelo" in picks.columns
+                       else pd.Series(float("nan"), index=picks.index))
+        prob_mercado = (pd.to_numeric(picks["prob_mercado"], errors="coerce")
+                        if "prob_mercado" in picks.columns
+                        else pd.Series(float("nan"), index=picks.index))
         return pd.DataFrame({
             "temporada": picks["season"].astype(int),
             "semana": picks["week"].astype(int),
@@ -899,13 +933,21 @@ with tab_registro:
                         + " @ "
                         + picks["home_team"].map(lambda e: APODOS.get(e, e))),
             "mercado": mercado,
+            "lado": lado,
             "pick": texto_pick,
             "linea": lineas,
+            "linea_num": pd.to_numeric(lineas_num, errors="coerce"),
             "edge": edges,
+            "edge_num": pd.to_numeric(edges_num, errors="coerce"),
+            "prob_modelo": prob_modelo,
+            "prob_mercado": prob_mercado,
             "cuota": pd.to_numeric(picks["cuota"], errors="coerce"),
             "gano": picks["gano"].astype("boolean"),
             "ganancia": pd.to_numeric(picks["ganancia"], errors="coerce"),
             "jugado": jugado,
+            "game_id": picks["game_id"].astype(str),
+            "equipo_local": picks["home_team"].astype(str),
+            "equipo_visitante": picks["away_team"].astype(str),
         })
 
     hs = evaluar_spread(era_reg, umbral_reg)
@@ -915,53 +957,82 @@ with tab_registro:
     ft = evaluar_totales(futuros_reg, umbral_reg)
     fm = datos.evaluar_picks_ml(futuros_reg, umbral=umbral_ml_reg / 100.0)
 
+    def _texto_spread(picks):
+        return pd.Series(
+            [etiqueta_pick(eq, li) for eq, li in zip(picks["pick"], picks["linea_pick"])],
+            index=picks.index)
+
+    def _texto_ml(picks):
+        return picks["pick"].map(lambda e: f"{APODOS.get(e, e)} gana")
+
     registro = pd.concat([
         _bloque_registro(
             hs, "Spread",
-            [etiqueta_pick(eq, li) for eq, li in zip(hs["pick"], hs["linea_pick"])],
+            hs["al_local"].map({True: "local", False: "visitante"}),
+            _texto_spread(hs),
             hs["linea_pick"].map(lambda x: f"{x:+.1f}"),
+            hs["linea_pick"],
             hs["edge"].map(lambda x: f"{x:+.1f} pts"),
+            hs["edge"],
             True),
         _bloque_registro(
-            ht, "Total", ht["pick"],
+            ht, "Total",
+            ht["al_over"].map({True: "over", False: "under"}),
+            ht["pick"],
             ht["total_line"].map(lambda x: f"{x:.1f}"),
+            ht["total_line"],
             ht["edge"].map(lambda x: f"{x:+.1f} pts"),
+            ht["edge"],
             True),
         _bloque_registro(
             hm, "Moneyline",
-            hm["pick"].map(lambda e: f"{APODOS.get(e, e)} gana"),
+            hm["al_local"].map({True: "local", False: "visitante"}),
+            _texto_ml(hm),
             pd.Series("—", index=hm.index),
+            pd.Series(float("nan"), index=hm.index),
             (hm["edge"] * 100).map(lambda x: f"{x:+.1f}%"),
+            hm["edge"],
             True),
         _bloque_registro(
             fs, "Spread",
-            [etiqueta_pick(eq, li) for eq, li in zip(fs["pick"], fs["linea_pick"])],
+            fs["al_local"].map({True: "local", False: "visitante"}),
+            _texto_spread(fs),
             fs["linea_pick"].map(lambda x: f"{x:+.1f}"),
+            fs["linea_pick"],
             fs["edge"].map(lambda x: f"{x:+.1f} pts"),
+            fs["edge"],
             False),
         _bloque_registro(
-            ft, "Total", ft["pick"],
+            ft, "Total",
+            ft["al_over"].map({True: "over", False: "under"}),
+            ft["pick"],
             ft["total_line"].map(lambda x: f"{x:.1f}"),
+            ft["total_line"],
             ft["edge"].map(lambda x: f"{x:+.1f} pts"),
+            ft["edge"],
             False),
         _bloque_registro(
             fm, "Moneyline",
-            fm["pick"].map(lambda e: f"{APODOS.get(e, e)} gana"),
+            fm["al_local"].map({True: "local", False: "visitante"}),
+            _texto_ml(fm),
             pd.Series("—", index=fm.index),
+            pd.Series(float("nan"), index=fm.index),
             (fm["edge"] * 100).map(lambda x: f"{x:+.1f}%"),
+            fm["edge"],
             False),
     ], ignore_index=True)
 
     registro["estado"] = datos.estado_picks(registro["gano"], registro["jugado"])
     registro["Estado"] = registro["estado"].map(EMOJI_ESTADO)
+    registro["origen"] = "🧮 Reconstruido"
     registro = registro.sort_values(
         ["temporada", "semana", "partido"], ascending=[False, False, True]
     )
 
     COLUMNAS_TABLA = {
         "fecha": "Fecha", "partido": "Partido", "mercado": "Mercado",
-        "pick": "Pick", "linea": "Línea", "edge": "Edge", "cuota": "Cuota",
-        "Estado": "Estado", "ganancia": "Ganancia $1",
+        "origen": "Origen", "pick": "Pick", "linea": "Línea", "edge": "Edge",
+        "cuota": "Cuota", "Estado": "Estado", "ganancia": "Ganancia $1",
     }
     CONFIG_TABLA = {
         "Cuota": st.column_config.NumberColumn(format="%+.0f"),
@@ -969,8 +1040,8 @@ with tab_registro:
 
     def _tabla_picks(datos_vista):
         """Tabla de picks lista para mostrar (ganancia vacía si pendiente)."""
-        v = datos_vista[["fecha", "partido", "mercado", "pick", "linea", "edge",
-                         "cuota", "Estado", "ganancia"]].rename(columns=COLUMNAS_TABLA)
+        v = datos_vista[["fecha", "partido", "mercado", "origen", "pick", "linea",
+                         "edge", "cuota", "Estado", "ganancia"]].rename(columns=COLUMNAS_TABLA)
         v = v.copy()
         pendiente = v["Estado"].str.contains("Pendiente")
         v["Ganancia $1"] = [
@@ -1028,6 +1099,118 @@ with tab_registro:
     else:
         st.info("Esta jornada no tiene picks con el umbral elegido.")
 
+    # --- Registro fiel: picks congelados al emitirse (inmutable) ----------
+    st.subheader("📌 Registro fiel (picks congelados)")
+    st.markdown(
+        "El **registro fiel** guarda cada pick con la **línea, cuota y "
+        "probabilidad exactas del momento en que se emitió**: si después el "
+        "mercado mueve las líneas, aquí no se reescribe nada (y el resultado "
+        "se decide con la línea congelada, no con la de hoy). Congelar es un "
+        "acto explícito: así queda claro qué se emitió, cuándo y a qué precio."
+    )
+
+    existente_fiel = datos.cargar_registro_picks()
+    nuevas_fiel = datos.registro_desde_picks(
+        registro[~registro["jugado"]].rename(columns={"pick": "seleccion"}))
+    ids_ya = set(existente_fiel["id"]) if len(existente_fiel) else set()
+    n_nuevos_fiel = int((~nuevas_fiel["id"].isin(ids_ya)).sum()) if len(nuevas_fiel) else 0
+
+    if not len(nuevas_fiel):
+        st.info("Ahora mismo no hay picks pendientes que congelar (no hay "
+                "jornada con líneas publicadas o ninguno supera el umbral).")
+    elif not n_nuevos_fiel:
+        st.caption("✓ Los picks pendientes de esta jornada ya están congelados. "
+                   "No hay nada nuevo que registrar.")
+    else:
+        if st.button(
+            f"📌 Congelar {n_nuevos_fiel} picks de la jornada (línea y cuota de este momento)",
+            help="Guarda una fotografía inmutable: selección, línea, cuota, "
+                 "probabilidad, edge y EV quedan fijados tal como están ahora. "
+                 "Volver a pulsar no cambia lo ya congelado.",
+        ):
+            existente_fiel, nuevos_fiel_n, repetidos_fiel = datos.capturar_registro_picks(
+                nuevas_fiel)
+            aviso = f"✅ Congelados {nuevos_fiel_n} picks nuevos."
+            if repetidos_fiel:
+                aviso += f" ({repetidos_fiel} ya estaban y no se han tocado.)"
+            st.success(aviso)
+
+    if len(existente_fiel):
+        fiel = datos.evaluar_registro_fiel(existente_fiel, calendario)
+        peg_fiel = int((fiel["estado"] == "Pegó").sum())
+        fal_fiel = int((fiel["estado"] == "No pegó").sum())
+        push_fiel = int((fiel["estado"] == "Push").sum())
+        pen_fiel = int((fiel["estado"] == "Pendiente").sum())
+        resueltas_fiel = fiel[fiel["estado"] != "Pendiente"]
+        roi_fiel = (float(resueltas_fiel["ganancia"].mean()) * 100
+                    if len(resueltas_fiel) and resueltas_fiel["ganancia"].notna().any()
+                    else float("nan"))
+        roi_txt = (f"ROI **{roi_fiel:+.1f}%** por $1 (solo resueltos con cuota real; "
+                   "sin cuota no se inventa)"
+                   if np.isfinite(roi_fiel) else "ROI — (aún sin resueltos con cuota)")
+        st.caption(
+            f"Congelados: **{len(fiel)}** · resueltos {peg_fiel + fal_fiel + push_fiel} "
+            f"· marcador **{peg_fiel}–{fal_fiel}** · push {push_fiel} · "
+            f"pendientes {pen_fiel} · {roi_txt}."
+        )
+
+        def _tabla_fiel(fiel_df):
+            """Tabla del registro fiel: lo congelado + el resultado derivado."""
+            vista_f = pd.DataFrame({
+                "Capturado": pd.to_datetime(fiel_df["capturado_en"], errors="coerce")
+                               .dt.strftime("%d/%m %H:%M"),
+                "Partido": (fiel_df["equipo_visitante"].map(lambda e: APODOS.get(e, e))
+                            + " @ "
+                            + fiel_df["equipo_local"].map(lambda e: APODOS.get(e, e))),
+                "Mercado": fiel_df["mercado"],
+                "Pick": fiel_df["seleccion"],
+                "Línea": pd.to_numeric(fiel_df["linea"], errors="coerce"),
+                "Cuota": pd.to_numeric(fiel_df["cuota"], errors="coerce"),
+                "Prob. modelo": pd.to_numeric(fiel_df["prob_modelo"], errors="coerce") * 100,
+                "Prob. sin vig": pd.to_numeric(fiel_df["prob_sin_vig"], errors="coerce") * 100,
+            })
+            vista_f["Edge"] = [
+                f"{e:+.1f} pp" if m == "Moneyline" else f"{e:+.1f} pts"
+                for e, m in zip(pd.to_numeric(fiel_df["edge"], errors="coerce"),
+                                fiel_df["mercado"])
+            ]
+            ev_fiel = pd.to_numeric(fiel_df["ev"], errors="coerce")
+            vista_f["EV $1"] = [f"{x:+.3f}" if pd.notna(x) else "" for x in ev_fiel]
+            vista_f["Estado"] = fiel_df["estado"].map(EMOJI_ESTADO)
+            vista_f["Ganancia $1"] = [
+                "" if est == "Pendiente" or pd.isna(g)
+                else ("$0.00" if est == "Push" else f"{g:+.2f}")
+                for est, g in zip(fiel_df["estado"],
+                                  pd.to_numeric(fiel_df["ganancia"], errors="coerce"))
+            ]
+            vista_f = vista_f.assign(_orden=fiel_df["capturado_en"].astype(str))
+            return vista_f.sort_values("_orden", ascending=False).drop(columns="_orden")
+
+        st.dataframe(
+            _tabla_fiel(fiel), hide_index=True, width="stretch",
+            column_config={
+                "Línea": st.column_config.NumberColumn(format="%+.1f"),
+                "Cuota": st.column_config.NumberColumn(format="%+.0f"),
+                "Prob. modelo": st.column_config.NumberColumn(format="%.1f%%"),
+                "Prob. sin vig": st.column_config.NumberColumn(format="%.1f%%"),
+            },
+        )
+        st.caption(
+            "**«Sin vig»** = probabilidad implícita del mercado quitándole la "
+            "comisión (la referencia justa). **EV $1** = valor esperado por "
+            "dólar según la probabilidad del modelo: si el modelo no estuviera "
+            "calibrado, el EV engañaría — por eso la calibración se audita "
+            "justo aquí abajo."
+        )
+    else:
+        st.caption(
+            "Todavía no hay ningún pick capturado: los primeros serán los que "
+            "congeles a partir de ahora. Los picks antiguos no se pueden "
+            "recuperar como se emitieron (el archivo histórico no guardaba la "
+            "línea del momento): van marcados como **🧮 Reconstruido** y se "
+            "recalculan con la línea actual de la tabla de abajo."
+        )
+
     # --- Acumulado --------------------------------------------------------
     st.subheader("📊 Acumulado: cómo va de verdad")
 
@@ -1079,6 +1262,104 @@ with tab_registro:
         )
     else:
         st.info("Todavía no hay picks para este alcance.")
+
+    # --- Calidad de las probabilidades (Brier, Log Loss, calibración) -----
+    st.subheader("📐 ¿Dicen la verdad las probabilidades? (Brier y Log Loss)")
+    st.markdown(
+        "Una probabilidad solo sirve si **dice la verdad**: si el modelo dice "
+        "60% y esos partidos se ganan 40% de las veces, engaña (y cualquier "
+        "«valor esperado» calculado con ella, también). Dos números lo miden "
+        "(**menor = mejor**): **Brier** (error cuadrático medio) y **Log Loss** "
+        "(castiga sobre todo la confianza mal puesta). Referencias honestas: "
+        "decir 50% a todo da Brier **0.25** y el rival a batir es el **mercado "
+        "sin vig**. Se calcula sobre TODOS los partidos jugados desde 2006 "
+        "(los push quedan fuera)."
+    )
+
+    p_local_spread = datos.probabilidad_supera(
+        era_reg["margen_modelo"], era_reg["spread_line"], era_reg["sigma_modelo"])
+    p_over_total = datos.probabilidad_supera(
+        era_reg["total_modelo"], era_reg["total_line"], era_reg["sigma_total_modelo"])
+    p_local_ml = datos.probabilidades_ml(
+        era_reg["margen_modelo"], era_reg["sigma_modelo"])[0]
+    po_cal = datos._prob_implicita(era_reg["over_odds"])
+    pu_cal = datos._prob_implicita(era_reg["under_odds"])
+    p_mercado_total = po_cal / (po_cal + pu_cal)
+    METRICAS_POR_MERCADO = {
+        "Spread": (p_local_spread, era_reg["prob_local_spread_sin_vig"],
+                   era_reg["cubre_local"]),
+        "Total": (p_over_total, p_mercado_total, era_reg["over"]),
+        "Moneyline": (p_local_ml, era_reg["prob_local_sin_vig"],
+                      era_reg["gano_local"]),
+    }
+
+    filas_calidad = []
+    for nombre_cal, (p_modelo_cal, p_mercado_cal, resultado_cal) in METRICAS_POR_MERCADO.items():
+        y_cal = resultado_cal.astype(float)
+        filas_calidad.append({
+            "Mercado": nombre_cal,
+            "Partidos": int((p_modelo_cal.notna() & y_cal.notna()).sum()),
+            "Brier modelo": datos.brier_score(p_modelo_cal, y_cal),
+            "Brier mercado": datos.brier_score(p_mercado_cal, y_cal),
+            "LogLoss modelo": datos.log_loss(p_modelo_cal, y_cal),
+            "LogLoss mercado": datos.log_loss(p_mercado_cal, y_cal),
+        })
+    st.dataframe(
+        pd.DataFrame(filas_calidad), hide_index=True, width="stretch",
+        column_config={
+            "Partidos": st.column_config.NumberColumn(format="%d"),
+            "Brier modelo": st.column_config.NumberColumn(format="%.4f"),
+            "Brier mercado": st.column_config.NumberColumn(format="%.4f"),
+            "LogLoss modelo": st.column_config.NumberColumn(format="%.4f"),
+            "LogLoss mercado": st.column_config.NumberColumn(format="%.4f"),
+        },
+    )
+    st.caption(
+        "Si el modelo saca peor Brier que el mercado (lo normal hoy), sus "
+        "probabilidades todavía no sirven para calcular un valor esperado "
+        "fiable. Reconocerlo es parte del juego."
+    )
+
+    mercado_cal = st.selectbox(
+        "Curva de calibración:", ["Moneyline", "Spread", "Total"],
+        key="mercado_calibracion",
+        help="Probabilidad dicha (eje X) frente a frecuencia real (eje Y). "
+             "Pegado a la diagonal = probabilidades honestas.",
+    )
+    p_modelo_cal, p_mercado_cal, resultado_cal = METRICAS_POR_MERCADO[mercado_cal]
+    y_cal = resultado_cal.astype(float)
+    cortes_cal = (0.0, 0.35, 0.45, 0.50, 0.55, 0.65, 1.0)
+    tabla_modelo = datos.tabla_calibracion(p_modelo_cal, y_cal, cortes_cal)
+    tabla_mercado = datos.tabla_calibracion(p_mercado_cal, y_cal, cortes_cal)
+
+    fig_cal = go.Figure()
+    fig_cal.add_trace(go.Scatter(
+        x=[0, 100], y=[0, 100], mode="lines", name="Ideal",
+        line=dict(color="rgba(255,255,255,.35)", dash="dash", width=1.5),
+        hoverinfo="skip",
+    ))
+    for tabla_cal, nombre_serie, color_serie in (
+        (tabla_modelo, "Modelo", "#F2C14E"),
+        (tabla_mercado, "Mercado (sin vig)", "#00C46A"),
+    ):
+        fig_cal.add_trace(go.Scatter(
+            x=tabla_cal["prob_media"] * 100, y=tabla_cal["real"] * 100,
+            mode="lines+markers", name=nombre_serie,
+            marker=dict(size=9, color=color_serie),
+            line=dict(width=2.5, color=color_serie),
+            customdata=tabla_cal["n"],
+            hovertemplate=("%{x:.1f}% dicho → %{y:.1f}% real<br>n = %{customdata}"
+                           "<extra>" + nombre_serie + "</extra>"),
+        ))
+    fig_cal.update_xaxes(title_text="Probabilidad dicha (%)", range=[0, 100])
+    fig_cal.update_yaxes(title_text="Frecuencia real (%)", range=[0, 100])
+    mostrar_grafica(fig_cal)
+    st.caption(
+        "**Cómo leerla:** si el modelo se aleja de la diagonal, miente — por "
+        "encima en la zona baja = promete más de lo que cumple; por debajo en "
+        "la zona alta = se queda corto. El mercado casi siempre va pegado a la "
+        "diagonal: es el listón real de esta app."
+    )
 
     # --- Todos los picks ---------------------------------------------------
     st.subheader("🧾 Todos los picks, uno a uno")

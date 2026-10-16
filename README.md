@@ -23,6 +23,12 @@ sin maquillar.
    jornada, el **% de acierto y el ROI por mercado**, el acumulado de la
    temporada y del histórico desde 2006, y filtros por temporada, equipo y
    mercado. Al actualizar las líneas tras jugarse, los pendientes se resuelven.
+   Incluye el **registro fiel** (📌 *congelar* los picks con la línea, cuota,
+   probabilidad y EV del momento en que se emiten — inmutable: si el mercado
+   mueve la línea, no se reescribe; los picks anteriores van marcados
+   🧮 Reconstruido) y la **calidad de las probabilidades**: tabla de
+   **Brier/Log Loss** contra el mercado sin *vig* y **curva de calibración**,
+   para comprobar si las probabilidades del modelo dicen la verdad.
 3. **📈 ATS por equipo** — récord contra la línea de cada equipo, **mapa de
    calor equipo × semana**, favoritos cubriendo por tamaño de línea y por
    temporada, y todos los partidos con su resultado ATS.
@@ -52,11 +58,18 @@ sin maquillar.
 - Compara su pronóstico con la línea → el **edge**. Si supera el umbral
   elegido, emite *pick*. Los *push* devuelven el dinero y no cuentan.
 - **Moneyline**: el margen pronosticado se convierte en probabilidad de
-  victoria (normal con el error real del modelo, σ ≈ 13.5 puntos) y se compara
-  con la cuota del mercado **sin** *vig*; emite pick si supera su umbral (en
-  puntos de probabilidad).
+  victoria (normal con el error real del modelo, σ ≈ 13.5 puntos para el
+  margen) y se compara con la cuota del mercado **sin** *vig*; emite pick si
+  supera su umbral (en puntos de probabilidad).
+- **σ honesto**: el error del modelo se congela al empezar cada jornada (un
+  partido del jueves nunca informa la probabilidad del domingo) y hay un σ
+  aparte para los totales. La app muestra cuándo el modelo acierta **menos**
+  de lo que promete (Brier/Log Loss/calibración, pestaña 📋): hoy el mercado
+  sin *vig* bate al modelo en los tres mercados.
 - Todo pick —spread, totales y ML— queda en el **registro** (pestaña 📋) con
-  su resultado real: ✅ pegó, ❌ no pegó, ➖ push o ⏳ pendiente.
+  su resultado real: ✅ pegó, ❌ no pegó, ➖ push o ⏳ pendiente. Desde el
+  **registro fiel** (📌), los picks se pueden congelar con su línea y cuota
+  exactas al emitirse: así se auditan como se emitieron, no como quedaron.
 - Las cuotas son las reales de nflverse (desde 2006); antes se asume −110.
 
 ## ¿Cómo se corre?
@@ -90,7 +103,11 @@ Cubren cuotas/vig, la convención del spread, *push*, totales, primetime
 (incluidas las correcciones de 1999–2005), el resumen por temporada, los
 precios entre casas (con datos de laboratorio), el respaldo sin internet,
 las probabilidades y **picks de moneyline**, el **registro de picks**
-(¿pegó?, % de acierto, ROI) y que el modelo **no vea el futuro**.
+(¿pegó?, % de acierto, ROI), el **σ congelado por jornada** (sin fuga dentro
+de la semana, tampoco en los totales), las **métricas de probabilidad**
+(Brier, Log Loss, calibración), el **registro fiel** (congelado al emitir,
+resultado con la línea congelada, sin cuota no hay EV) y que el modelo
+**no vea el futuro**.
 
 ## Archivos
 
@@ -101,6 +118,7 @@ las probabilidades y **picks de moneyline**, el **registro de picks**
 | `tests/test_datos.py` | Pruebas básicas |
 | `data/nfl_games.csv` | Caché de partidos y líneas (se baja sola; NO se sube) |
 | `data/equipos.csv` | Nombres y colores (NO se sube) |
+| `data/registro_picks.csv` | Registro fiel: picks congelados al emitirse (se crea al pulsar «📌 Congelar»; SÍ se sube) |
 | `data/partidos.csv` | Respaldo de ejemplo si no hay internet (sí se sube) |
 | `requirements.txt` | Librerías |
 | `.streamlit/config.toml` | Tema oscuro del dashboard |

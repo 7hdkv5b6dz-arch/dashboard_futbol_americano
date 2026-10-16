@@ -13,7 +13,10 @@ acierto y ROI).
 """
 
 import itertools
+import math
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -64,6 +67,30 @@ def calendario_sintetico(fuerzas=None):
                 home_score=20.0 + margen, away_score=20.0,
                 spread_line=float("nan"), total_line=float("nan"),
             ))
+    crudo = pd.DataFrame(filas)
+    return crudo, datos._preparar(crudo)
+
+
+def calendario_largo(temporadas=8):
+    """Temporadas sintéticas de 17 semanas (2 partidos/semana, 4 equipos).
+
+    Dan para 272 partidos: suficiente para que el sigma walk-forward (mínimo
+    100 errores) tenga valores reales y se pueda comprobar que se congela al
+    empezar cada jornada. Devuelve (crudo, preparado), igual que el corto.
+    """
+    fuerzas = {"AAA": 7.0, "BBB": 3.0, "CCC": -3.0, "DDD": -7.0}
+    parejas = [("AAA", "BBB"), ("CCC", "DDD")]
+    filas = []
+    for t in range(temporadas):
+        for week in range(1, 18):
+            for i, (local, visitante) in enumerate(parejas):
+                margen = fuerzas[local] - fuerzas[visitante] + 3 + ((week + i) % 5) - 2
+                filas.append(fila_partido(
+                    season=2020 + t, week=week,
+                    home_team=local, away_team=visitante,
+                    home_score=22.0 + margen, away_score=22.0,
+                    spread_line=float("nan"), total_line=float("nan"),
+                ))
     crudo = pd.DataFrame(filas)
     return crudo, datos._preparar(crudo)
 
@@ -603,6 +630,234 @@ class PicksMoneylineYRegistro(unittest.TestCase):
         self.assertEqual(int(fila["pendientes"]), 2)
         self.assertTrue(np.isnan(float(fila["pct_acierto"])))
         self.assertTrue(np.isnan(float(fila["roi"])))
+
+
+class MetricasDeProbabilidad(unittest.TestCase):
+    """Brier, Log Loss, calibración y la probabilidad de cubrir (Fase 6).
+
+    Una probabilidad que no dice la verdad no vale nada: estas utilidades son
+    las que permiten medirlo y compararlo con el mercado.
+    """
+
+    def test_probabilidad_supera_normal(self):
+        p = datos.probabilidad_supera(
+            pd.Series([3.0, 16.0, 3.0, float("nan")]),
+            pd.Series([3.0, 3.0, 6.0, 3.0]),
+            pd.Series([13.0, 13.0, 13.0, 13.0]),
+        )
+        self.assertAlmostEqual(float(p.iloc[0]), 0.5, places=6)  # clava la línea
+        self.assertGreater(float(p.iloc[1]), 0.80)               # +1σ ≈ 84%
+        self.assertLess(float(p.iloc[2]), 0.45)                  # por debajo
+        self.assertTrue(np.isnan(float(p.iloc[3])))              # sin pronóstico
+        # Sin sigma válido no hay probabilidad.
+        vacio = datos.probabilidad_supera(
+            pd.Series([3.0]), pd.Series([3.0]), pd.Series([0.0]))
+        self.assertTrue(np.isnan(float(vacio.iloc[0])))
+
+    def test_brier_matematicas(self):
+        self.assertAlmostEqual(
+            datos.brier_score(pd.Series([1.0, 0.0]), pd.Series([1.0, 0.0])), 0.0)
+        self.assertAlmostEqual(
+            datos.brier_score(pd.Series([0.0]), pd.Series([1.0])), 1.0)
+        self.assertAlmostEqual(
+            datos.brier_score(pd.Series([0.5, 0.5]), pd.Series([1, 0])), 0.25)
+        # Vacíos (push / pendiente) se descartan; sin casos evaluables: NaN.
+        self.assertAlmostEqual(
+            datos.brier_score(pd.Series([0.5, pd.NA]), pd.Series([1, pd.NA])), 0.25)
+        self.assertTrue(np.isnan(
+            datos.brier_score(pd.Series([0.5]), pd.Series([pd.NA]))))
+
+    def test_log_loss_matematicas(self):
+        self.assertAlmostEqual(
+            datos.log_loss(pd.Series([0.5]), pd.Series([1])), math.log(2), places=10)
+        self.assertAlmostEqual(
+            datos.log_loss(pd.Series([1.0]), pd.Series([1])), 0.0)
+        # Extremos recortados (no explota con 0 o 1).
+        self.assertTrue(np.isfinite(datos.log_loss(pd.Series([1.0]), pd.Series([0]))))
+
+    def test_tabla_calibracion(self):
+        p = pd.Series([0.4] * 10 + [0.6] * 10)
+        y = pd.Series([1, 1, 1, 1, 0, 0, 0, 0, 0, 0] + [1, 1, 1, 1, 1, 1, 0, 0, 0, 0])
+        tabla = datos.tabla_calibracion(p, y, cortes=(0.0, 0.5, 1.0))
+        self.assertEqual(len(tabla), 2)
+        primera, segunda = tabla.iloc[0], tabla.iloc[1]
+        self.assertEqual(int(primera["n"]), 10)
+        self.assertAlmostEqual(float(primera["prob_media"]), 0.4)
+        self.assertAlmostEqual(float(primera["real"]), 0.4)
+        self.assertAlmostEqual(float(primera["diferencia"]), 0.0)
+        self.assertAlmostEqual(float(primera["desde"]), 0.0)
+        self.assertAlmostEqual(float(segunda["prob_media"]), 0.6)
+        self.assertAlmostEqual(float(segunda["real"]), 0.6)
+        # Vacíos fuera y tabla vacía sin filas.
+        self.assertEqual(int(datos.tabla_calibracion(
+            pd.Series([0.9, pd.NA]), pd.Series([1, 1]),
+            cortes=(0.0, 0.95, 1.0))["n"].sum()), 1)
+        self.assertTrue(datos.tabla_calibracion(
+            pd.Series([pd.NA]), pd.Series([pd.NA])).empty)
+
+    def test_sigma_total_walk_forward_y_congelado_por_jornada(self):
+        crudo, cal = calendario_largo()
+        hist = datos.pronosticos_historicos(cal, minimo_partidos=10)
+        self.assertIn("sigma_total_modelo", hist.columns)
+        for columna in ("sigma_modelo", "sigma_total_modelo"):
+            con_sigma = hist[hist[columna].notna()]
+            self.assertGreater(len(con_sigma), 0)
+            # Congelado al empezar la jornada: un solo valor por (temporada, semana).
+            por_jornada = con_sigma.groupby(["season", "week"])[columna].nunique()
+            self.assertTrue((por_jornada <= 1).all())
+        # No ver el futuro: falsear el ÚLTIMO resultado no cambia ningún sigma.
+        crudo2 = crudo.copy()
+        crudo2.loc[crudo2.index[-1], "home_score"] += 40.0
+        s2 = datos.pronosticos_historicos(datos._preparar(crudo2), minimo_partidos=10)
+        np.testing.assert_allclose(
+            hist["sigma_modelo"].to_numpy(), s2["sigma_modelo"].to_numpy(),
+            equal_nan=True)
+        np.testing.assert_allclose(
+            hist["sigma_total_modelo"].to_numpy(), s2["sigma_total_modelo"].to_numpy(),
+            equal_nan=True)
+
+    def test_sigma_actual_usa_todos_los_errores(self):
+        _, cal = calendario_largo()
+        hist = datos.pronosticos_historicos(cal, minimo_partidos=10)
+        s_margen, s_total = datos.sigma_actual(hist)
+        self.assertTrue(np.isfinite(s_margen) and s_margen > 0)
+        self.assertTrue(np.isfinite(s_total) and s_total > 0)
+        esperado = datos._sigma_margen(
+            (hist["margen"] - hist["margen_modelo"]).dropna().tolist())
+        self.assertAlmostEqual(s_margen, esperado, places=10)
+        esperado_t = datos._sigma_margen(
+            (hist["total_puntos"] - hist["total_modelo"]).dropna().tolist())
+        self.assertAlmostEqual(s_total, esperado_t, places=10)
+
+
+class RegistroFielDePicks(unittest.TestCase):
+    """Captura congelada al emitir, inmutabilidad y evaluación honesta.
+
+    La promesa central: una vez capturado un pick, aunque el mercado mueva la
+    línea, su selección, línea, cuota y probabilidad NO cambian; el resultado
+    se decide con la línea CONGELADA.
+    """
+
+    def _fila_registro(self, **cambios) -> dict:
+        """Una fila con las columnas comunes que la app manda al registro."""
+        base = {
+            "temporada": 2026, "semana": 6, "game_id": "2026_06_AAA_BBB",
+            "equipo_local": "AAA", "equipo_visitante": "BBB",
+            "mercado": "Spread", "lado": "local", "seleccion": "AAA -3.5",
+            "linea_num": -3.5, "cuota": -110.0, "prob_modelo": 0.62,
+            "prob_mercado": 0.52, "edge_num": 2.0,
+        }
+        base.update(cambios)
+        return base
+
+    def test_registro_desde_picks_columnas_y_derivados(self):
+        entrada = pd.DataFrame([self._fila_registro()])
+        reg = datos.registro_desde_picks(entrada, momento="2026-10-16T10:00:00")
+        self.assertEqual(list(reg.columns), datos.COLUMNAS_REGISTRO_PICKS)
+        fila = reg.iloc[0]
+        self.assertEqual(fila["id"], "2026|6|2026_06_AAA_BBB|Spread|local")
+        self.assertEqual(fila["capturado_en"], "2026-10-16T10:00:00")
+        self.assertEqual(fila["version_modelo"], datos.VERSION_MODELO)
+        self.assertAlmostEqual(float(fila["prob_implicita"]), 110.0 / 210.0, places=6)
+        self.assertAlmostEqual(
+            float(fila["ev"]), 0.62 * (100.0 / 110.0) - 0.38, places=6)
+        self.assertAlmostEqual(float(fila["linea"]), -3.5)
+        self.assertAlmostEqual(float(fila["prob_sin_vig"]), 0.52)
+
+        # Sin cuota real: ni probabilidad implícita ni EV inventados.
+        sin_cuota = datos.registro_desde_picks(
+            pd.DataFrame([self._fila_registro(cuota=float("nan"))]))
+        self.assertTrue(np.isnan(float(sin_cuota["prob_implicita"].iloc[0])))
+        self.assertTrue(np.isnan(float(sin_cuota["ev"].iloc[0])))
+
+        # Entrada vacía → vacío con columnas; columnas que faltan → error claro.
+        self.assertTrue(datos.registro_desde_picks(pd.DataFrame()).empty)
+        with self.assertRaises(ValueError):
+            datos.registro_desde_picks(pd.DataFrame([{"temporada": 2026}]))
+
+    def test_captura_dedupe_y_congelacion(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            ruta = Path(carpeta) / "registro.csv"
+            original = datos.registro_desde_picks(
+                pd.DataFrame([self._fila_registro()]), momento="2026-10-16T10:00:00")
+            total, nuevos, repetidos = datos.capturar_registro_picks(original, ruta=ruta)
+            self.assertEqual((len(total), nuevos, repetidos), (1, 1, 0))
+            # El mercado mueve la línea: recapturar NO reescribe lo congelado.
+            cambiada = datos.registro_desde_picks(
+                pd.DataFrame([self._fila_registro(
+                    linea_num=-2.5, cuota=-115.0, edge_num=3.1)]),
+                momento="2026-10-17T18:00:00")
+            total2, nuevos2, repetidos2 = datos.capturar_registro_picks(cambiada, ruta=ruta)
+            self.assertEqual((len(total2), nuevos2, repetidos2), (1, 0, 1))
+            self.assertAlmostEqual(float(total2["linea"].iloc[0]), -3.5)
+            self.assertAlmostEqual(float(total2["cuota"].iloc[0]), -110.0)
+            self.assertEqual(total2["capturado_en"].iloc[0], "2026-10-16T10:00:00")
+            # El archivo en disco conserva la primera captura.
+            leido = datos.cargar_registro_picks(ruta=ruta)
+            self.assertAlmostEqual(float(leido["linea"].iloc[0]), -3.5)
+
+    def test_resultado_usa_la_linea_congelada(self):
+        reg = datos.registro_desde_picks(pd.DataFrame([self._fila_registro()]))
+        calendario = pd.DataFrame([
+            {"game_id": "2026_06_AAA_BBB", "home_score": 23.0, "away_score": 20.0}])
+        resultado = datos.evaluar_registro_fiel(reg, calendario)
+        # AAA ganó por 3: con la línea congelada (-3.5) NO cubre…
+        self.assertEqual(resultado["estado"].iloc[0], "No pegó")
+        self.assertAlmostEqual(float(resultado["ganancia"].iloc[0]), -1.0)
+        # …aunque la línea de HOY (-2.5) diría que sí: da igual, manda la capturada.
+        con_linea_actual = reg.assign(linea=-2.5)
+        self.assertEqual(
+            datos.evaluar_registro_fiel(con_linea_actual, calendario)["estado"].iloc[0],
+            "Pegó")
+        # Sin marcador (pendiente): ni resultado ni ganancia.
+        pendiente = datos.evaluar_registro_fiel(
+            reg, pd.DataFrame(columns=["game_id", "home_score", "away_score"]))
+        self.assertEqual(pendiente["estado"].iloc[0], "Pendiente")
+        self.assertTrue(np.isnan(float(pendiente["ganancia"].iloc[0])))
+
+    def test_evaluar_registro_tres_mercados_push_y_sin_cuota(self):
+        filas = pd.DataFrame([
+            self._fila_registro(lado="visitante", linea_num=3.5, seleccion="BBB +3.5"),
+            self._fila_registro(mercado="Total", lado="under", linea_num=44.0,
+                                seleccion="Menos de 44.0"),
+            self._fila_registro(mercado="Moneyline", lado="visitante",
+                                linea_num=float("nan"), seleccion="BBB gana"),
+            self._fila_registro(game_id="2026_06_CCC_DDD", linea_num=-3.0,
+                                seleccion="CCC -3.0"),
+            self._fila_registro(game_id="2026_06_EEE_FFF", cuota=float("nan"),
+                                linea_num=-3.5, seleccion="EEE -3.5"),
+        ])
+        calendario = pd.DataFrame([
+            {"game_id": "2026_06_AAA_BBB", "home_score": 23.0, "away_score": 20.0},
+            {"game_id": "2026_06_CCC_DDD", "home_score": 23.0, "away_score": 20.0},
+            {"game_id": "2026_06_EEE_FFF", "home_score": 23.0, "away_score": 20.0},
+        ])
+        res = datos.evaluar_registro_fiel(datos.registro_desde_picks(filas), calendario)
+        self.assertEqual(list(res["estado"]),
+                         ["Pegó", "Pegó", "No pegó", "Push", "No pegó"])
+        self.assertAlmostEqual(float(res["ganancia"].iloc[0]), 100.0 / 110.0, places=6)
+        self.assertAlmostEqual(float(res["ganancia"].iloc[3]), 0.0)  # push: $0
+        self.assertTrue(np.isnan(float(res["ganancia"].iloc[4])))    # sin cuota
+
+    def test_guardar_y_cargar_ida_y_vuelta(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            ruta = Path(carpeta) / "sub" / "registro.csv"
+            reg = datos.registro_desde_picks(
+                pd.DataFrame([
+                    self._fila_registro(),
+                    self._fila_registro(mercado="Total", lado="over", linea_num=44.0,
+                                        seleccion="Más de 44.0", edge_num=-2.1),
+                ]),
+                momento="2026-10-16T10:00:00")
+            datos.guardar_registro_picks(reg, ruta=ruta)
+            leido = datos.cargar_registro_picks(ruta=ruta)
+            self.assertEqual(len(leido), 2)
+            self.assertEqual(list(leido["id"]), list(reg["id"]))
+            self.assertAlmostEqual(float(leido["linea"].iloc[0]), -3.5)
+            self.assertEqual(leido["game_id"].iloc[0], "2026_06_AAA_BBB")
+            # Escribir lo leído y volver a leerlo no cambia nada (estable).
+            datos.guardar_registro_picks(leido, ruta=ruta)
+            pd.testing.assert_frame_equal(leido, datos.cargar_registro_picks(ruta=ruta))
 
 
 if __name__ == "__main__":
