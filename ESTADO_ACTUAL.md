@@ -4,8 +4,9 @@ Bitácora de la etapa de mejora estadística (encargo de 7 fases, 16/10/2026).
 Se actualiza al cerrar cada fase. Las decisiones fijadas aquí solo cambian
 con evidencia nueva y quedando documentado el cambio.
 
-Última actualización: 16/10/2026 (F5 completada: motor de EV con push
-explícito, probabilidad de equilibrio y estados).
+Última actualización: 16/10/2026 (F2 completada: guardarraíles e integridad
+— validación estructural del registro, escritura atómica, sello completo,
+`p_push` congelada y clave de API fuera de pantalla; F5 cerrada antes).
 
 ## Reglas de trabajo vigentes
 
@@ -26,7 +27,7 @@ explícito, probabilidad de equilibrio y estados).
 |---|---|---|---|
 | F0 | Diagnóstico de auditoría (problemas verificados) | Completada (16/10/2026) | Hallazgos H1–H12 (abajo) |
 | F1 | Instrumento de evaluación v3: mismos partidos, push estricto, segmentos, IC95% | Completada (16/10/2026) | `lab/evaluacion.py` + `lab/salida_instrumento_v3.txt` — 77/77 comprobaciones OK, 0,6 s, determinista |
-| F2 | Guardarraíles de código (tests de `evaluar_spread`/`evaluar_totales`, conversión de cuota única, escritura atómica del registro) | Pendiente | — |
+| F2 | Guardarraíles e integridad (validación estructural del registro, escritura atómica, sello completo, `p_push` congelada, seguridad de la clave, suite sin red) | Completada (16/10/2026) | `lab/diagnostico_f2.md` + `lab/verificacion_integridad.py` + `lab/salida_integridad_f2.txt` — 33/33 OK; registro real intacto (sha 79f7250d…) |
 | F3 | Protocolo pre-registrado + walk-forward anidado (formalización por escrito de cada experimento) | Completada (16/10/2026); se repetirá un pre-registro por experimento en las fases siguientes | Pre-registro de F4: `lab/pre_registro_calibracion.md` (sha 61617cbbc815); convenios y protocolo abajo |
 | F4 | Calibración: A modelo / B mercado / C recalibrado / D mezcla, walk-forward puro | Completada (16/10/2026) | `lab/calibracion.py` + `lab/salida_calibracion.txt` — 20/20 comprobaciones OK, determinista; verificación de apoyo `lab/verificacion_calibracion.py` |
 | F4b | Integración de la calibración en la app (adoptada: spread C1 · total C1 · moneyline D; versión `cal-f4-1`) | Completada (16/10/2026) | `calibracion.py` (raíz) + `tests/test_calibracion.py` + `lab/verificacion_integracion.py` + `lab/salida_integracion_f4.txt` — 14/14 OK |
@@ -49,7 +50,7 @@ explícito, probabilidad de equilibrio y estados).
 | H8 | 2026 (temporada en curso) entraba sin etiqueta en los agregados | Media-baja | Etiquetada como informativa en el instrumento |
 | H9 | Empates ML con doble criterio; etiquetas "push fuera"/"empates fuera" del reporte inexactas a nivel de todos los partidos (push/empate contados como 0 en spread/ML; el total sí los excluía) | Baja | Cuantificado con sensibilidad en el instrumento (Δ apenas cambia) |
 | H10 | Cobertura de cuotas irregular 2006–2009; −110 por defecto cuando falta cuota (~2,5% de picks) | Baja | Documentado; % de cuota real impreso junto al ROI |
-| H11 | Deuda técnica: helpers de la app sin tests, conversión de cuota duplicada, escritura del registro no atómica, laboratorio fuera del repo | Baja | Lab ya versionado en F1; resto → F2 |
+| H11 | Deuda técnica: helpers de la app sin tests, conversión de cuota duplicada, escritura del registro no atómica, laboratorio fuera del repo | Baja | Resuelto en F2: escritura atómica + validación estructural; lab versionado en F1; helpers cubiertos por pruebas/AST donde aplica (resto: F2-12) |
 | H12 | Etiquetas "Nivel: Muy alta/Alta" basadas solo en el tamaño del edge | Baja | Pendiente (F6) |
 
 ## F1 — Instrumento de evaluación v3
@@ -320,6 +321,91 @@ se adopta sin documentar la limitación en pantalla».
 - `datos._pago_por_dolar` sigue asumiendo −110 en el ROI histórico; el motor
   **no rellena nada** (diferencia deliberada, con prueba de regresión).
 
+## F2 — Guardarraíles e integridad (16/10/2026)
+
+**Qué es**: la capa de confiabilidad operativa del registro y de los datos,
+sin tocar el modelo, la calibración, los umbrales ni los picks. Diagnóstico
+previo con la lista priorizada de riesgos en `lab/diagnostico_f2.md` (escrito
+**antes** de corregir: primero se documenta, después se arregla con prueba).
+
+**Qué se corrigió** (nueve hallazgos; detalle y evidencia por hallazgo en el
+diagnóstico):
+
+- **F2-1 (crítico, seguridad)**: el mensaje de error de The Odds API podía
+  mostrar la clave en pantalla (la excepción de `requests` incluye la URL con
+  `apiKey=…`; reproducido en local con una conexión fallida). Ahora todo
+  mensaje derivado de excepción o respuesta pasa por `datos._redactar_secretos`
+  (tapa el propio secreto y cualquier `apiKey=…`). El archivo de secretos no
+  se toca y `.streamlit/secrets.toml` sigue ignorado por Git.
+- **F2-2 (alto)**: la escritura del registro fiel es **atómica** (temporal en
+  la misma carpeta + `os.replace`): una interrupción a mitad de escritura deja
+  intacto el registro anterior, que es irremplazable.
+- **F2-3 (alto)**: **validación estructural** antes de capturar
+  (`datos.validar_registro_picks`: ids duplicados o vacíos, probabilidades
+  fuera de [0,1], cuota 0 o infinita, edge/ev no finitos, mercado/lado
+  incoherentes, temporada/semana no enteras…). Errores → **no se escribe
+  nada** (falla cerrada, con mensaje claro); avisos → se muestran en pantalla;
+  los vacíos legítimos NO son errores (no se inventa nada). También bloquea la
+  captura si el archivo en disco ya trae errores (antes, `drop_duplicates`
+  podía reescribirlo en silencio).
+- **F2-4 (medio)**: la captura nueva sella `srs-v2+cal-f4-1+ev-f5-1` (modelo +
+  calibración + motor de EV) en vez del sello parcial; la app muestra las
+  versiones presentes en el registro.
+- **F2-5 (medio)**: la captura congela `p_push` (el EV guardado pasa a ser
+  auditable sin re-ejecutar el estimador); la tabla del registro fiel la
+  muestra. Las filas viejas quedan con la celda vacía (compatible).
+- **F2-6 (medio)**: los pendientes de la jornada se etiquetan «🧾 Línea de
+  hoy» (antes decían «Reconstruido» sin tener resultado; y «Sin congelar»
+  confundía con el aviso de que la jornada ya está capturada); el texto aclara
+  que solo lo congelado es evidencia prospectiva y que la versión congelada,
+  si existe, vive en el registro fiel.
+- **F2-7 (bajo)**: alarma de coherencia de la terna p_ganar/p_perder/p_push
+  (`motor_ev.problemas_coherencia`: suma 1 ±1e-9, rangos y coherencia con
+  `p_estimada`) revisada antes de congelar; si no cuadra, no se captura.
+- **F2-8 (bajo)**: temporada/semana vacías dan un `ValueError` en español
+  (antes: error de conversión de pandas).
+- **F2-9 (bajo)**: la suite bloquea la red (`tests/__init__.py`): ninguna
+  prueba puede tocar servicios externos ni gastar créditos, aunque alguien
+  añada una prueba descuidada.
+
+**Evidencia** (`lab/verificacion_integridad.py` → `lab/salida_integridad_f2.txt`;
+**33/33 OK**, 0,45 s, sin red, determinista salvo la línea de reloj):
+
+- El registro real pasa limpio (50 filas, 0 duplicados, 0 valores imposibles)
+  y queda **intacto**: sha1 `79f7250d7a87` idéntico antes y después (el mismo
+  de la línea base F5). La verificación trabaja sobre copias temporales.
+- Captura de prueba sobre una copia: solo añade; las filas viejas quedan
+  idénticas (`assert_frame_equal` fila a fila); recapturar no cambia un byte;
+  una línea movida no reescribe lo congelado; el sello y `p_push`/EV quedan
+  congelados tal cual.
+- Fallo de escritura simulado → original intacto y sin `.tmp`. Fila imposible
+  (p=1.5) o archivo con ids duplicados → rechazo con mensaje, sin escribir.
+- La jornada real mantiene los picks de la línea base F5 (spread 14 / total
+  13 / moneyline 0) y 0 incoherencias de la terna.
+- Seguridad: el redactado tapa la clave en los dos caminos de error; la app
+  está cableada a `VERSION_REGISTRO`, la validación, la coherencia y la
+  columna `p_push` (comprobado por AST/fuente).
+
+**Pruebas**: 23 nuevas (4 de redactado de claves, 12 de integridad del
+registro, 6 de coherencia de la terna, 1 de la guardia de red). Total del
+proyecto: **143/143** verdes; `py_compile` OK.
+
+**Cambios visibles en el dashboard** (solo en el registro): aviso ✓/⚠️/🛑 de
+validación del registro fiel; columna «P. push» en su tabla; etiqueta «🧾
+Línea de hoy» en los pendientes; pie con las versiones congeladas; textos
+actualizados. El modelo, la calibración, los umbrales y los picks no cambian.
+
+**Limitaciones de este bloque**:
+
+- La validación es estructural, no semántica: detecta lo imposible, no lo
+  legal-pero-erróneo (p. ej., una cuota válida que no era la del momento).
+- El resultado del registro fiel se sigue derivando del marcador actual de
+  nflverse (determinista, con la línea congelada); el marcador no se congela
+  (F2-10, mejora futura documentada).
+- `capturado_en` sigue en hora local sin zona (F2-11).
+- Los bloques de pestaña no tienen pruebas directas (F2-12: se cubren por
+  extracción AST y verificación visual del render).
+
 ## Protocolo anti-contaminación (fijado el 16/10/2026)
 
 Historial de uso de los datos:
@@ -355,13 +441,14 @@ Reglas para las fases siguientes:
 
 ## Próximo paso
 
-F5 está **cerrada**: el EV se calcula con push explícito, probabilidad de
-equilibrio, banda del calibrado y estado; el sesgo del push está medido y
-documentado en pantalla, y ningún estado «valida» nada. Siguiente: **F6**
+F5 y F2 están **cerradas**. F5: el EV se calcula con push explícito,
+probabilidad de equilibrio, banda del calibrado y estado; el sesgo del push
+está medido y documentado en pantalla, y ningún estado «valida» nada. F2: el
+registro fiel está validado, se escribe de forma atómica, sella
+`srs-v2+cal-f4-1+ev-f5-1` con `p_push` congelada, y la clave de la API no
+puede aparecer en pantalla (33/33 OK; registro intacto). Siguiente: **F6**
 (UI de decisión: muestra, motivos, incertidumbre visible, revisión de las
 etiquetas «Nivel» — H12 — y de la presentación de los estados). Después,
-**F7** (variables nuevas, una a una contra la línea base). **F2
-(guardarraíles)** sigue disponible (deuda técnica; no cambia resultados). El
-eje de búsqueda de EV+ sigue siendo el precio/CLV (H6), no la «información
-propia»; la confirmación de cualquier estrategia es prospectiva (registro
-fiel).
+**F7** (variables nuevas, una a una contra la línea base). El eje de búsqueda
+de EV+ sigue siendo el precio/CLV (H6), no la «información propia»; la
+confirmación de cualquier estrategia es prospectiva (registro fiel).

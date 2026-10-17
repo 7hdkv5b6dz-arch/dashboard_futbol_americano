@@ -1,0 +1,82 @@
+====================================================================================
+Verificación de guardarraíles e integridad (F2) — sin Streamlit
+====================================================================================
+  app.py           sha1 e510651461ed
+  datos.py         sha1 95c891c82980
+  motor_ev.py      sha1 ab5f11841874
+  calibracion.py   sha1 5e72ee304b97
+  Diagnóstico: lab/diagnostico_f2.md (sha1 e9f146975843)
+  Registro real: data/registro_picks.csv (sha1 79f7250d7a87)
+  Sello de capturas nuevas: srs-v2+cal-f4-1+ev-f5-1
+  Solo lectura del registro real · sin red · determinista (salvo la línea de tiempo)
+
+==============================================================================
+1. REGISTRO FIEL REAL: VALIDACIÓN ESTRUCTURAL
+==============================================================================
+  Versiones selladas: srs-v1 (46) · srs-v2 (4)
+  Esquema en disco: anterior a F2 (sin p_push) — la próxima captura añade la columna con vacíos en las filas viejas
+
+==============================================================================
+2. COMPATIBILIDAD CON REGISTROS HISTÓRICOS
+==============================================================================
+
+==============================================================================
+3. CAPTURA EN COPIA DEL REGISTRO REAL (solo-añadir)
+==============================================================================
+
+==============================================================================
+4. ESCRITURA ATÓMICA (una interrupción no toca el original)
+==============================================================================
+
+==============================================================================
+5. CAPTURA QUE FALLA CERRADA (no escribe si hay errores)
+==============================================================================
+
+==============================================================================
+6. JORNADA PENDIENTE REAL: COHERENCIA Y LÍNEA BASE
+==============================================================================
+
+==============================================================================
+7. SEGURIDAD (clave fuera de pantalla, git y pruebas)
+==============================================================================
+
+  [OK   ] registro real: filas                                       50
+  [OK   ] registro real: ids duplicados                              0
+  [OK   ] registro real: errores de validación                       0
+  [OK   ] registro real: avisos de validación                        0
+  [OK   ] CSV sin p_push carga con la columna vacía                  n=50 · p_push toda vacía
+  [OK   ] CSV viejo: errores de validación                           0
+  [OK   ] valores viejos intactos tras cargar                        cuota fila a fila, sin cambios
+  [OK   ] captura: filas nuevas                                      2
+  [OK   ] captura: repetidas                                         0
+  [OK   ] captura: total = antes + nuevas                            52
+  [OK   ] captura: las filas viejas quedan IDÉNTICAS                 assert_frame_equal fila a fila
+  [OK   ] captura: sello = modelo+calibración+motor                  srs-v2+cal-f4-1+ev-f5-1
+  [OK   ] captura: p_push y EV congelados tal cual                   p_push [0.0, 0.028] · ev [0.0234, 0.0117]
+  [OK   ] recapturar: 0 nuevos y archivo byte a byte igual           nuevos=0 repetidos=2
+  [OK   ] línea movida: lo congelado NO se reescribe                 linea -2.5 · cuota -105.0
+  [OK   ] fallo de escritura: original intacto y sin .tmp            bytes idénticos + sin temporal
+  [OK   ] fila nueva imposible (p=1.5): rechazada sin escribir       Hay picks nuevos que no se pueden congelar (no se escribió n…
+  [OK   ] archivo con ids duplicados: rechazado sin tocar            El registro fiel en disco tiene problemas y NO se ha tocado …
+  [OK   ] Spread: incoherencias de la terna                          0
+  [OK   ] Spread: picks pendientes = línea base F5                   14
+  [OK   ] Total: incoherencias de la terna                           0
+  [OK   ] Total: picks pendientes = línea base F5                    13
+  [OK   ] Moneyline: picks pendientes = 0                            0
+  [OK   ] redactado: la clave no sobrevive                           Max retries exceeded with url: /odds?apiKey=***&regions=us…
+  [OK   ] error de conexión mostrado: sin clave                      Sin conexión con The Odds API (HTTPSConnectionPool: url: /odds?apiKey=…
+  [OK   ] .gitignore cubre .streamlit/secrets.toml                   línea presente (no se lee el archivo de secretos)
+  [OK   ] app.py: captura con VERSION_REGISTRO                       srs-v2+cal-f4-1+ev-f5-1
+  [OK   ] app.py: valida el registro antes de capturar               aviso en pantalla si hay problemas
+  [OK   ] app.py: alarma de coherencia cableada                      revisión antes de congelar
+  [OK   ] app.py: p_push congelada y en la tabla                     columna P. push + origen honesto
+  [OK   ] datos.py: ambos errores de la API redactados               definición + 2 usos
+  [OK   ] sin intentos de red                                        0 intentos
+  [OK   ] tiempo de ejecución < 10 s                                 0.46 s
+
+
+VEREDICTO: 33/33 comprobaciones OK — el registro real queda intacto
+(sha1 79f7250d7a87), la captura solo añade y falla cerrada ante corrupción,
+la clave no puede aparecer en pantalla y la terna p_ganar/p_perder/p_push es coherente.
+Recordatorio: esto NO dice que el sistema sea rentable; la validación de la estrategia
+sigue siendo prospectiva (registro fiel) y nada de F2 cambia el modelo, la calibración ni los picks.

@@ -30,6 +30,15 @@ fuera, en una carpeta temporal).
   jornada pendiente real (funciones de `app.py` por AST), push empírico
   2006–2025 contra lo observado, regresión contra `datos` y contrato `ev_num`.
 - `salida_motor_ev.txt` — Salida congelada de F5 (37/37 comprobaciones).
+- `diagnostico_f2.md` — Diagnóstico de F2 (guardarraíles e integridad): lista
+  priorizada de riesgos, escrita ANTES de corregir; al cierre, 33/33 en la
+  verificación y registro real intacto.
+- `verificacion_integridad.py` — Verificación de F2: validación estructural
+  del registro real (solo lectura), compatibilidad del esquema anterior,
+  captura en copia (solo-añadir, idempotente, sellada), escritura atómica,
+  captura que falla cerrada, coherencia de la terna y seguridad (redactado
+  de claves).
+- `salida_integridad_f2.txt` — Salida congelada de F2 (33/33 comprobaciones).
 
 La calibración **adoptada** (producción) vive fuera del laboratorio, en
 `calibracion.py` (raíz del proyecto), con coeficientes y covarianzas congelados
@@ -46,6 +55,7 @@ cd dashboard_futbol_americano
 .venv/bin/python -B lab/verificacion_calibracion.py  # apoyo de F4
 .venv/bin/python -B lab/verificacion_integracion.py  # integración (F4b)
 .venv/bin/python -B lab/verificacion_motor_ev.py     # motor de EV (F5)
+.venv/bin/python -B lab/verificacion_integridad.py   # integridad (F2)
 ```
 
 No escribe ningún archivo del proyecto, no usa red (bloquea sockets durante el
@@ -89,6 +99,11 @@ cálculo) y no consume créditos de ninguna API. Tarda unos segundos.
   pantalla, como fija `pre_registro_motor_ev.md`). La banda del EV cubre solo
   el error de estimación de los coeficientes de calibración (delta method con
   la covarianza congelada).
+- Guardarraíles (F2): el registro fiel se valida ANTES de cada captura
+  (errores → no se escribe nada; avisos → se muestran); la escritura es
+  atómica (temporal + `os.replace`); la captura nueva sella
+  `srs-v2+cal-f4-1+ev-f5-1` y congela `p_push`; los vacíos legítimos no son
+  errores (no se inventa nada); la suite de pruebas bloquea la red.
 
 ## Reglas de uso para las fases siguientes
 

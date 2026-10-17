@@ -351,5 +351,53 @@ class TestProbabilidadSuperaMotor(unittest.TestCase):
             rtol=0, atol=1e-12)
 
 
+class CoherenciaDeLaTerna(unittest.TestCase):
+    """F2: alarma interna de p_ganar/p_perder/p_push (suma 1 y rangos)."""
+
+    @staticmethod
+    def _fila(**cambios):
+        base = {"p_ganar": 0.55, "p_perder": 0.43, "p_push": 0.02}
+        base.update(cambios)
+        return base
+
+    def test_terna_coherente_pasa(self):
+        df = pd.DataFrame([self._fila()])
+        self.assertEqual(len(motor_ev.problemas_coherencia(df)), 0)
+
+    def test_vacios_no_se_revisan(self):
+        df = pd.DataFrame([{"p_ganar": np.nan, "p_perder": np.nan,
+                            "p_push": np.nan}])
+        self.assertEqual(len(motor_ev.problemas_coherencia(df)), 0)
+
+    def test_suma_rota_se_detecta(self):
+        df = pd.DataFrame([self._fila(p_perder=0.30)])
+        problemas = motor_ev.problemas_coherencia(df)
+        self.assertEqual(len(problemas), 1)
+        self.assertIn("≠ 1", problemas["problema"].iloc[0])
+
+    def test_fuera_de_rango_se_detecta(self):
+        df = pd.DataFrame([self._fila(p_ganar=-0.1, p_perder=-0.1, p_push=1.2)])
+        problemas = motor_ev.problemas_coherencia(df)
+        self.assertEqual(len(problemas), 3)  # una por probabilidad
+        for problema in problemas["problema"]:
+            self.assertIn("fuera de [0,1]", problema)
+
+    def test_p_estimada_incoherente_se_detecta(self):
+        df = pd.DataFrame([self._fila(p_estimada=0.90)])
+        problemas = motor_ev.problemas_coherencia(df)
+        self.assertEqual(len(problemas), 1)
+        self.assertIn("p_estimada", problemas["problema"].iloc[0])
+
+    def test_lo_que_produce_el_motor_es_coherente(self):
+        marco = pd.DataFrame({
+            "margen_modelo": [3.2, -1.5], "spread_line": [-2.5, 1.0],
+            "sigma_modelo": [13.0, 13.0], "cuota": [-110.0, -105.0],
+            "al_local": [True, False],
+            "prob_modelo": [0.57, 0.48],
+        })
+        r = motor_ev.decorar(marco, "spread")
+        self.assertEqual(len(motor_ev.problemas_coherencia(r)), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

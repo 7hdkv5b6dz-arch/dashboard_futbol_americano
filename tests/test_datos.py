@@ -910,5 +910,187 @@ class RegistroFielDePicks(unittest.TestCase):
             pd.testing.assert_frame_equal(leido, datos.cargar_registro_picks(ruta=ruta))
 
 
+class RedaccionDeSecretos(unittest.TestCase):
+    """F2: la clave de The Odds API jamás aparece en mensajes de error."""
+
+    def test_tapa_apikey_y_el_propio_secreto(self):
+        texto = ("Max retries exceeded with url: /v4/sports/nfl/odds"
+                 "?apiKey=CLAVE_SECRETA_123&regions=us (clave CLAVE_SECRETA_123)")
+        limpio = datos._redactar_secretos(texto, "CLAVE_SECRETA_123")
+        self.assertNotIn("CLAVE_SECRETA_123", limpio)
+        self.assertIn("apiKey=***", limpio)
+
+    def test_tapa_apikey_aunque_no_conozca_el_secreto(self):
+        limpio = datos._redactar_secretos("...?apiKey=otra_clave&x=1")
+        self.assertNotIn("otra_clave", limpio)
+        self.assertIn("&x=1", limpio)  # el resto del mensaje queda útil
+
+    def test_error_de_conexion_no_filtra_la_clave(self):
+        fallo = datos.requests.exceptions.ConnectionError(
+            "HTTPSConnectionPool(host='api.the-odds-api.com', port=443): Max "
+            "retries exceeded with url: /v4/sports/americanfootball_nfl/odds/"
+            "?apiKey=CLAVE_SECRETA_123&regions=us")
+        with mock.patch.object(datos.requests, "get", side_effect=fallo):
+            with self.assertRaises(ValueError) as caso:
+                datos.cargar_precios_casas("CLAVE_SECRETA_123")
+        self.assertNotIn("CLAVE_SECRETA_123", str(caso.exception))
+        self.assertIn("Sin conexión", str(caso.exception))
+
+    def test_cuerpo_de_respuesta_con_la_clave_tambien_se_tapa(self):
+        class Respuesta:
+            status_code = 500
+            headers = {}
+            text = "error interno ?apiKey=CLAVE_SECRETA_123&regions=us"
+
+        with mock.patch.object(datos.requests, "get", return_value=Respuesta()):
+            with self.assertRaises(ValueError) as caso:
+                datos.cargar_precios_casas("CLAVE_SECRETA_123")
+        self.assertNotIn("CLAVE_SECRETA_123", str(caso.exception))
+        self.assertIn("500", str(caso.exception))
+
+
+class IntegridadDelRegistro(unittest.TestCase):
+    """F2: validación estructural, escritura atómica y captura a prueba de fallos."""
+
+    def _fila(self, **cambios) -> dict:
+        base = {
+            "temporada": 2026, "semana": 6, "game_id": "2026_06_AAA_BBB",
+            "equipo_local": "AAA", "equipo_visitante": "BBB",
+            "mercado": "Spread", "lado": "local", "seleccion": "AAA -3.5",
+            "linea_num": -3.5, "cuota": -110.0, "prob_modelo": 0.62,
+            "prob_mercado": 0.52, "edge_num": 2.0,
+        }
+        base.update(cambios)
+        return base
+
+    def _limpio(self) -> pd.DataFrame:
+        return datos.registro_desde_picks(
+            pd.DataFrame([self._fila()]), momento="2026-10-16T10:00:00")
+
+    # --- validación estructural -------------------------------------------
+    def test_registro_limpio_pasa_sin_problemas(self):
+        self.assertEqual(len(datos.validar_registro_picks(self._limpio())), 0)
+
+    def test_vacios_honestos_son_avisos_y_no_errores(self):
+        reg = self._limpio()
+        reg["cuota"] = np.nan
+        reg["prob_modelo"] = np.nan
+        problemas = datos.validar_registro_picks(reg)
+        self.assertGreater(len(problemas), 0)
+        self.assertTrue((problemas["severidad"] == "aviso").all())
+        self.assertIn("sin cuota", datos.resumen_problemas(problemas))
+
+    def test_detecta_cada_valor_imposible(self):
+        casos = [
+            ("id vacío", lambda r: r.assign(id="")),
+            ("fuera de [0,1]", lambda r: r.assign(prob_modelo=1.2)),
+            ("fuera de [0,1]", lambda r: r.assign(prob_sin_vig=-0.1)),
+            ("fuera de [0,1]", lambda r: r.assign(p_push=2.0)),
+            ("cuota inválida", lambda r: r.assign(cuota=0.0)),
+            ("cuota inválida", lambda r: r.assign(cuota=float("inf"))),
+            ("no finito", lambda r: r.assign(edge=float("inf"))),
+            ("no finito", lambda r: r.assign(ev=float("-inf"))),
+            ("mercado desconocido", lambda r: r.assign(mercado="Otro")),
+            ("no corresponde al mercado",
+             lambda r: r.assign(mercado="Total", lado="local")),
+            ("capturado_en", lambda r: r.assign(capturado_en="")),
+        ]
+        for aguja, romper in casos:
+            problemas = datos.validar_registro_picks(romper(self._limpio()))
+            errores = problemas[problemas["severidad"] == "error"]
+            self.assertTrue(len(errores), msg=aguja)
+            self.assertIn(aguja, " ".join(errores["problema"]), msg=aguja)
+
+    def test_detecta_ids_duplicados(self):
+        reg = pd.concat([self._limpio(), self._limpio()], ignore_index=True)
+        problemas = datos.validar_registro_picks(reg)
+        errores = problemas[problemas["severidad"] == "error"]
+        self.assertEqual(len(errores), 2)  # una por fila repetida
+        self.assertIn("id duplicado (2 veces)", errores["problema"].iloc[0])
+
+    # --- escritura atómica -------------------------------------------------
+    def test_fallo_de_escritura_deja_el_original_intacto(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            ruta = Path(carpeta) / "registro.csv"
+            datos.guardar_registro_picks(self._limpio(), ruta=ruta)
+            antes = ruta.read_bytes()
+            with mock.patch.object(pd.DataFrame, "to_csv",
+                                   side_effect=RuntimeError("disco lleno")):
+                with self.assertRaises(RuntimeError):
+                    datos.guardar_registro_picks(self._limpio(), ruta=ruta)
+            self.assertEqual(ruta.read_bytes(), antes)
+            self.assertFalse(ruta.with_name(ruta.name + ".tmp").exists())
+
+    def test_escritura_normal_no_deja_temporales(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            ruta = Path(carpeta) / "registro.csv"
+            datos.guardar_registro_picks(self._limpio(), ruta=ruta)
+            self.assertTrue(ruta.exists())
+            self.assertFalse(ruta.with_name(ruta.name + ".tmp").exists())
+
+    # --- captura que falla cerrada -----------------------------------------
+    def test_captura_rechaza_filas_nuevas_con_errores(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            ruta = Path(carpeta) / "registro.csv"
+            datos.guardar_registro_picks(self._limpio(), ruta=ruta)
+            antes = ruta.read_bytes()
+            mala = self._limpio().assign(prob_modelo=1.5)
+            with self.assertRaises(ValueError) as caso:
+                datos.capturar_registro_picks(mala, ruta=ruta)
+            self.assertIn("no se escribió nada", str(caso.exception))
+            self.assertEqual(ruta.read_bytes(), antes)
+
+    def test_captura_rechaza_si_el_archivo_en_disco_esta_corrupto(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            ruta = Path(carpeta) / "registro.csv"
+            corrupto = pd.concat([self._limpio(), self._limpio()],
+                                 ignore_index=True)
+            datos.guardar_registro_picks(corrupto, ruta=ruta)
+            antes = ruta.read_bytes()
+            with self.assertRaises(ValueError) as caso:
+                datos.capturar_registro_picks(self._limpio(), ruta=ruta)
+            self.assertIn("NO se ha tocado nada", str(caso.exception))
+            self.assertEqual(ruta.read_bytes(), antes)
+
+    # --- p_push congelada y compatibilidad ---------------------------------
+    def test_p_push_se_congela_y_sobrevive_la_ida_y_vuelta(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            ruta = Path(carpeta) / "registro.csv"
+            reg = datos.registro_desde_picks(
+                pd.DataFrame([self._fila(p_push=0.031, ev_num=0.05)]),
+                momento="2026-10-16T10:00:00")
+            self.assertAlmostEqual(float(reg["p_push"].iloc[0]), 0.031)
+            datos.guardar_registro_picks(reg, ruta=ruta)
+            leido = datos.cargar_registro_picks(ruta=ruta)
+            self.assertAlmostEqual(float(leido["p_push"].iloc[0]), 0.031)
+            self.assertAlmostEqual(float(leido["ev"].iloc[0]), 0.05)
+
+    def test_archivo_viejo_sin_p_push_carga_con_vacio(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            ruta = Path(carpeta) / "registro.csv"
+            self._limpio().drop(columns=["p_push"]).to_csv(
+                ruta, index=False, na_rep="")
+            leido = datos.cargar_registro_picks(ruta=ruta)
+            self.assertIn("p_push", leido.columns)
+            self.assertTrue(leido["p_push"].isna().all())
+            self.assertEqual(len(datos.validar_registro_picks(leido)), 0)
+
+    # --- mensajes claros y sello completo ----------------------------------
+    def test_temporada_o_semana_vacias_dan_mensaje_claro(self):
+        for columna in ("temporada", "semana"):
+            fila = self._fila(**{columna: float("nan")})
+            with self.assertRaises(ValueError) as caso:
+                datos.registro_desde_picks(pd.DataFrame([fila]))
+            self.assertIn(columna, str(caso.exception))
+            self.assertIn("no se inventa nada", str(caso.exception))
+
+    def test_sello_de_version_completo_ida_y_vuelta(self):
+        sello = "srs-v2+cal-f4-1+ev-f5-1"
+        reg = datos.registro_desde_picks(
+            pd.DataFrame([self._fila()]), version=sello,
+            momento="2026-10-16T10:00:00")
+        self.assertEqual(reg["version_modelo"].iloc[0], sello)
+
+
 if __name__ == "__main__":
     unittest.main()

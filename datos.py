@@ -34,6 +34,8 @@ Si no hay internet, cae de vuelta a los datos de ejemplo (data/partidos.csv).
 from pathlib import Path
 from datetime import datetime
 import math
+import os
+import re
 
 import numpy as np
 import pandas as pd
@@ -357,6 +359,20 @@ def resumen_por_temporada(partidos: pd.DataFrame, desde: int = 2020) -> pd.DataF
 ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/"
 
 
+def _redactar_secretos(texto, secreto=None) -> str:
+    """Quita claves de un mensaje antes de mostrarlo o registrarlo.
+
+    Los mensajes de error de `requests` incluyen la URL completa, y en ella
+    viaja la clave de The Odds API (`apiKey=…`): esto la tapa. Además borra
+    cualquier aparición del propio secreto. Nunca se toca el archivo de
+    secretos: esto es solo para textos de salida.
+    """
+    t = str(texto)
+    if secreto:
+        t = t.replace(str(secreto), "***")
+    return re.sub(r"(?i)(api_?key=)[^&\s\"')]+", r"\1***", t)
+
+
 def cargar_precios_casas(api_key: str, regiones: str = "us",
                          mercados: str = "spreads,totals"):
     """Cuotas actuales de la NFL en varias casas (The Odds API).
@@ -364,7 +380,8 @@ def cargar_precios_casas(api_key: str, regiones: str = "us",
     Devuelve `(tabla, uso)`: la tabla larga de `parsear_precios_casas(...)` y
     un dict con los créditos del plan gratuito (`usados`, `restantes`,
     `ultima`). Lanza `ValueError` con un mensaje claro en español si la clave
-    no sirve, no quedan consultas o no hay conexión.
+    no sirve, no quedan consultas o no hay conexión. Todos los mensajes pasan
+    por `_redactar_secretos`: la clave JAMÁS aparece en pantalla ni en logs.
     """
     try:
         respuesta = requests.get(
@@ -379,7 +396,10 @@ def cargar_precios_casas(api_key: str, regiones: str = "us",
             timeout=30,
         )
     except requests.RequestException as error:
-        raise ValueError(f"Sin conexión con The Odds API ({error}).") from error
+        raise ValueError(
+            "Sin conexión con The Odds API "
+            f"({_redactar_secretos(error, api_key)})."
+        ) from None
 
     if respuesta.status_code == 401:
         raise ValueError(
@@ -394,7 +414,7 @@ def cargar_precios_casas(api_key: str, regiones: str = "us",
     if respuesta.status_code != 200:
         raise ValueError(
             f"The Odds API respondió {respuesta.status_code}: "
-            f"{respuesta.text[:160]}"
+            f"{_redactar_secretos(respuesta.text[:160], api_key)}"
         )
 
     tabla = parsear_precios_casas(respuesta.json())
@@ -1028,8 +1048,17 @@ COLUMNAS_REGISTRO_PICKS = [
     "id", "capturado_en", "temporada", "semana", "game_id", "equipo_local",
     "equipo_visitante", "mercado", "lado", "seleccion", "linea", "cuota",
     "prob_modelo", "prob_implicita", "prob_sin_vig", "edge", "ev",
-    "version_modelo",
+    "version_modelo", "p_push",
 ]
+# `p_push` se añadió en F2 (16/10/2026): los archivos viejos no la traen y
+# cargan igual (celda vacía) — nunca se inventa un valor. Va al final para no
+# mover las columnas históricas.
+MERCADOS_REGISTRO = ("Spread", "Total", "Moneyline")
+LADOS_POR_MERCADO = {
+    "Spread": ("local", "visitante"),
+    "Total": ("over", "under"),
+    "Moneyline": ("local", "visitante"),
+}
 # Columnas comunes que debe traer el DataFrame de entrada (las arma la app):
 # `linea_num`, `edge_num` y `prob_mercado` son números; `seleccion` es texto.
 COLUMNAS_ENTRADA_REGISTRO = (
@@ -1058,6 +1087,11 @@ def registro_desde_picks(picks: pd.DataFrame, momento=None,
     faltan = [c for c in COLUMNAS_ENTRADA_REGISTRO if c not in picks.columns]
     if faltan:
         raise ValueError(f"Faltan columnas para el registro fiel: {faltan}")
+    for columna in ("temporada", "semana"):
+        if pd.to_numeric(picks[columna], errors="coerce").isna().any():
+            raise ValueError(
+                f"Hay picks sin {columna}: no se puede formar el id del "
+                "registro fiel (no se inventa nada).")
     momento = momento or datetime.now().isoformat(timespec="seconds")
 
     cuota = pd.to_numeric(picks["cuota"], errors="coerce")
@@ -1069,6 +1103,9 @@ def registro_desde_picks(picks: pd.DataFrame, momento=None,
               if "ev_num" in picks.columns
               else pd.Series(float("nan"), index=picks.index))
     ev = ev_num.where(ev_num.notna(), ev_aprox)
+    p_push = (pd.to_numeric(picks["p_push"], errors="coerce")
+              if "p_push" in picks.columns
+              else pd.Series(float("nan"), index=picks.index))
 
     registro = pd.DataFrame({
         "id": (picks["temporada"].astype(int).astype(str) + "|"
@@ -1093,6 +1130,7 @@ def registro_desde_picks(picks: pd.DataFrame, momento=None,
         "edge": pd.to_numeric(picks["edge_num"], errors="coerce"),
         "ev": ev,
         "version_modelo": version,
+        "p_push": p_push,
     })
     return registro[COLUMNAS_REGISTRO_PICKS].reset_index(drop=True)
 
@@ -1134,20 +1172,201 @@ def unir_registro_fiel(nuevas: pd.DataFrame, existente: pd.DataFrame) -> pd.Data
 
 
 def guardar_registro_picks(registro: pd.DataFrame, ruta=None) -> Path:
-    """Escribe el registro fiel en disco (CSV legible; vacíos = celda vacía)."""
+    """Escribe el registro fiel en disco de forma ATÓMICA.
+
+    Primero escribe un archivo temporal en la misma carpeta y luego lo mueve
+    sobre el definitivo con `os.replace` (atómico dentro del mismo sistema de
+    archivos): una interrupción a mitad de escritura deja intacto el registro
+    anterior, que es irremplazable. Si algo falla, el temporal se limpia.
+    """
     ruta = Path(ruta) if ruta is not None else RUTA_REGISTRO_PICKS
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    registro.to_csv(ruta, index=False, na_rep="")
+    temporal = ruta.with_name(ruta.name + ".tmp")
+    try:
+        registro.to_csv(temporal, index=False, na_rep="")
+        os.replace(temporal, ruta)
+    except BaseException:
+        try:
+            temporal.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return ruta
+
+
+def resumen_problemas(problemas: pd.DataFrame, tope: int = 5) -> str:
+    """Texto corto con los primeros problemas (para avisos en pantalla)."""
+    if problemas is None or not len(problemas):
+        return ""
+    partes = [
+        f"{p['id']}: {p['problema']}" if p["id"] else str(p["problema"])
+        for _, p in problemas.head(tope).iterrows()
+    ]
+    resto = len(problemas) - len(partes)
+    texto = "; ".join(partes)
+    if resto > 0:
+        texto += f"; … y {resto} más"
+    return texto
+
+
+def validar_registro_picks(registro: pd.DataFrame) -> pd.DataFrame:
+    """Problemas estructurales del registro fiel (vacío = todo bien).
+
+    Devuelve una fila por problema con `severidad` («error»: bloquearía la
+    captura; «aviso»: solo informa), el `id` de la fila y `problema` (en
+    español). Los VACÍOS legítimos (sin cuota, sin línea en moneyline, sin
+    `p_push` en filas históricas) NO son problemas — aquí no se inventa
+    nada —: se detectan valores IMPOSIBLES (probabilidad fuera de [0,1],
+    cuota 0 o infinita, edge/ev no finitos), ids duplicados o vacíos y filas
+    incompletas de verdad.
+    """
+    columnas = ["severidad", "id", "problema"]
+    if registro is None or not len(registro):
+        return pd.DataFrame(columns=columnas)
+    reg = registro.reset_index(drop=True)
+    problemas = []
+
+    def agregar(severidad, fila, problema):
+        ident = reg.loc[fila, "id"] if "id" in reg.columns else ""
+        problemas.append({
+            "severidad": severidad,
+            "id": "" if pd.isna(ident) else str(ident),
+            "problema": problema,
+        })
+
+    def numerica(columna):
+        if columna not in reg.columns:
+            return pd.Series(float("nan"), index=reg.index)
+        return pd.to_numeric(reg[columna], errors="coerce").astype(float)
+
+    for columna in ("id", "capturado_en", "temporada", "semana", "game_id",
+                    "mercado", "lado", "seleccion"):
+        if columna not in reg.columns:
+            problemas.append({"severidad": "error", "id": "",
+                              "problema": f"falta la columna {columna}"})
+    if "version_modelo" not in reg.columns:
+        problemas.append({"severidad": "aviso", "id": "",
+                          "problema": "falta la columna version_modelo"})
+
+    if "id" in reg.columns:
+        ident = reg["id"].astype("string")
+        vacio = ident.isna() | ident.str.strip().eq("")
+        for fila in reg.index[vacio]:
+            agregar("error", fila, "id vacío")
+        repetido = ident.duplicated(keep=False) & ~vacio
+        if repetido.any():
+            veces = ident[repetido].value_counts()
+            for fila in reg.index[repetido]:
+                agregar("error", fila,
+                        f"id duplicado ({int(veces[str(ident.loc[fila])])} veces)")
+
+    if "capturado_en" in reg.columns:
+        fecha = pd.to_datetime(reg["capturado_en"], errors="coerce")
+        vacio = (reg["capturado_en"].isna()
+                 | reg["capturado_en"].astype("string").str.strip().eq(""))
+        for fila in reg.index[vacio | fecha.isna()]:
+            agregar("error", fila, "capturado_en vacío o ilegible")
+
+    for columna in ("temporada", "semana"):
+        if columna in reg.columns:
+            valores = numerica(columna)
+            for fila in reg.index[valores.isna()]:
+                agregar("error", fila, f"{columna} vacía")
+            for fila in reg.index[valores.notna() & (valores % 1.0).ne(0.0)]:
+                agregar("error", fila, f"{columna} no entera: {valores.loc[fila]:g}")
+
+    for columna in ("game_id", "seleccion"):
+        if columna in reg.columns:
+            texto = reg[columna].astype("string")
+            for fila in reg.index[texto.isna() | texto.str.strip().eq("")]:
+                agregar("error", fila, f"{columna} vacía")
+
+    if "mercado" in reg.columns:
+        mercado = reg["mercado"].astype("string")
+        for fila in reg.index[mercado.isna() | mercado.str.strip().eq("")]:
+            agregar("error", fila, "mercado vacío")
+        for fila in reg.index[mercado.notna()
+                              & ~mercado.isin(MERCADOS_REGISTRO)]:
+            agregar("error", fila, f"mercado desconocido: {mercado.loc[fila]!r}")
+        if "lado" in reg.columns:
+            lado = reg["lado"].astype("string")
+            for fila in reg.index[lado.isna() | lado.str.strip().eq("")]:
+                agregar("error", fila, "lado vacío")
+            for fila in reg.index[lado.notna() & mercado.notna()
+                                  & mercado.isin(MERCADOS_REGISTRO)]:
+                permitidos = LADOS_POR_MERCADO[str(mercado.loc[fila])]
+                if str(lado.loc[fila]) not in permitidos:
+                    agregar("error", fila,
+                            f"lado {lado.loc[fila]!r} no corresponde al "
+                            f"mercado {mercado.loc[fila]!r}")
+
+    for columna in ("prob_modelo", "prob_implicita", "prob_sin_vig", "p_push"):
+        if columna in reg.columns:
+            valores = numerica(columna)
+            for fila in reg.index[valores.notna()]:
+                v = valores.loc[fila]
+                if v < 0.0 or v > 1.0:
+                    agregar("error", fila, f"{columna} fuera de [0,1]: {v:g}")
+    if "prob_modelo" in reg.columns:
+        for fila in reg.index[numerica("prob_modelo").isna()]:
+            agregar("aviso", fila, "prob_modelo vacía")
+
+    if "cuota" in reg.columns:
+        cuota = numerica("cuota")
+        for fila in reg.index:
+            v = cuota.loc[fila]
+            if pd.isna(v):
+                agregar("aviso", fila, "sin cuota (se guarda vacía, no se inventa)")
+            elif not np.isfinite(v) or v == 0.0:
+                agregar("error", fila, f"cuota inválida: {v:g}")
+            elif abs(v) < 100.0:
+                agregar("aviso", fila, f"momio atípico (|cuota| < 100): {v:g}")
+
+    for columna in ("edge", "ev", "linea"):
+        if columna in reg.columns:
+            valores = numerica(columna)
+            for fila in reg.index[valores.notna()]:
+                v = valores.loc[fila]
+                if not np.isfinite(v):
+                    agregar("error", fila, f"{columna} no finito: {v:g}")
+    for columna in ("edge", "ev"):
+        if columna in reg.columns:
+            for fila in reg.index[numerica(columna).isna()]:
+                agregar("aviso", fila, f"{columna} vacío")
+
+    if "version_modelo" in reg.columns:
+        ver = reg["version_modelo"].astype("string")
+        for fila in reg.index[ver.isna() | ver.str.strip().eq("")]:
+            agregar("aviso", fila, "sin sello de versión")
+
+    return pd.DataFrame(problemas, columns=columnas)
 
 
 def capturar_registro_picks(nuevas: pd.DataFrame, ruta=None) -> tuple:
     """Congela los picks nuevos y devuelve `(registro_total, nuevos, repetidos)`.
 
-    Solo escribe si hay algo nuevo que añadir (el archivo no se reescribe por
-    gusto). `ruta=None` usa el registro del proyecto.
+    Antes de escribir, valida el archivo en disco y las filas nuevas: si hay
+    ERRORES estructurales (ids duplicados, valores imposibles…) se niega a
+    escribir y lanza `ValueError` con el detalle — mejor no capturar nada que
+    escribir sobre un registro corrupto. Los avisos no bloquean. Solo escribe
+    si hay algo nuevo que añadir (el archivo no se reescribe por gusto).
+    `ruta=None` usa el registro del proyecto.
     """
     existente = cargar_registro_picks(ruta)
+    problemas_existente = validar_registro_picks(existente)
+    errores = (problemas_existente[problemas_existente["severidad"] == "error"]
+               if len(problemas_existente) else problemas_existente)
+    if len(errores):
+        raise ValueError(
+            "El registro fiel en disco tiene problemas y NO se ha tocado "
+            f"nada: {resumen_problemas(errores)}.")
+    problemas_nuevas = validar_registro_picks(nuevas)
+    errores = (problemas_nuevas[problemas_nuevas["severidad"] == "error"]
+               if len(problemas_nuevas) else problemas_nuevas)
+    if len(errores):
+        raise ValueError(
+            "Hay picks nuevos que no se pueden congelar (no se escribió "
+            f"nada): {resumen_problemas(errores)}.")
     repetidos = 0
     if nuevas is not None and len(nuevas) and len(existente):
         repetidos = int(nuevas["id"].isin(existente["id"]).sum())

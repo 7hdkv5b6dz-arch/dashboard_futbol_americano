@@ -33,6 +33,9 @@ Contrato y convenciones
 - NINGÚN estado dice «validada»: un EV+ puede ser ruido o error de
   calibración; la validación de la estrategia es prospectiva (registro fiel).
   `ESTADO_ESTRATEGIA` lo dice explícitamente para mostrarlo en la interfaz.
+- `problemas_coherencia` es la alarma interna de la terna
+  p_ganar/p_perder/p_push (suma 1, rangos, coherencia con `p_estimada`): la
+  app la revisa antes de congelar picks (F2).
 
 Determinista, sin red, sin dependencias nuevas (numpy/pandas).
 """
@@ -243,6 +246,60 @@ def evaluar_apuesta(p_condicional, cuota, p_push=0.0, p_lo=None, p_hi=None):
         "ev_hi": e_hi,
         "estado": estado_ev(e, e_lo),
     }, index=pc.index)
+
+
+def problemas_coherencia(df, tol: float = 1e-9) -> pd.DataFrame:
+    """Filas donde la terna (p_ganar, p_perder, p_push) NO cuadra.
+
+    Debe cumplir: cada probabilidad en [0,1] y p_ganar + p_perder + p_push = 1
+    (±tol); si además viene `p_estimada`, debe cumplir p_estimada ≈
+    p_ganar/(p_ganar+p_perder). Los vacíos (sin datos) no son problemas: solo
+    se revisan las filas donde la terna está completa. Devuelve un DataFrame
+    con `indice` y `problema` (vacío si todo cuadra). Es una alarma interna
+    —la coherencia está garantizada por construcción y probada—, no un
+    cálculo nuevo.
+    """
+    columnas = ["indice", "problema"]
+    if df is None or not len(df):
+        return pd.DataFrame(columns=columnas)
+
+    def serie(columna):
+        if columna not in df.columns:
+            return pd.Series(float("nan"), index=df.index)
+        return pd.to_numeric(df[columna], errors="coerce").astype(float)
+
+    p_ganar = serie("p_ganar")
+    p_perder = serie("p_perder")
+    p_push = serie("p_push")
+    p_estimada = serie("p_estimada")
+    completas = p_ganar.notna() & p_perder.notna() & p_push.notna()
+    filas = []
+    for pos, indice in enumerate(df.index):
+        if not bool(completas.iloc[pos]):
+            continue
+        a = float(p_ganar.iloc[pos])
+        b = float(p_perder.iloc[pos])
+        c = float(p_push.iloc[pos])
+        for nombre, valor in (("p_ganar", a), ("p_perder", b), ("p_push", c)):
+            if valor < 0.0 or valor > 1.0:
+                filas.append({
+                    "indice": indice,
+                    "problema": f"{nombre} fuera de [0,1]: {valor:.6f}"})
+        suma = a + b + c
+        if abs(suma - 1.0) > tol:
+            filas.append({
+                "indice": indice,
+                "problema": f"p_ganar + p_perder + p_push = {suma:.12f} (≠ 1)"})
+        if pd.notna(p_estimada.iloc[pos]) and (a + b) > 0.0:
+            esperado = a / (a + b)
+            if abs(float(p_estimada.iloc[pos]) - esperado) > tol:
+                filas.append({
+                    "indice": indice,
+                    "problema": (
+                        f"p_estimada {float(p_estimada.iloc[pos]):.6f} no "
+                        f"corresponde a p_ganar/(p_ganar+p_perder) "
+                        f"{esperado:.6f}")})
+    return pd.DataFrame(filas, columns=columnas)
 
 
 # ---------------------------------------------------------------------------

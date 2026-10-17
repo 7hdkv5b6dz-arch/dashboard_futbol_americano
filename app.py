@@ -35,6 +35,11 @@ import calibracion
 import datos
 import motor_ev
 
+# Sello de versión con el que se congelan los picks NUEVOS (F2): modelo +
+# calibración + motor de EV. Las filas ya capturadas conservan su sello.
+VERSION_REGISTRO = (f"{datos.VERSION_MODELO}+{calibracion.VERSION_CALIBRACION}"
+                    f"+{motor_ev.VERSION_EV}")
+
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Apuestas NFL — datos reales",
@@ -986,7 +991,9 @@ with tab_registro:
         "jueguen y pulses **🔄 Actualizar líneas**. Los picks nuevos se pueden "
         "**congelar al emitirse** (📌 registro fiel, con su línea exacta de "
         "aquel momento); los antiguos van marcados **🧮 Reconstruido** porque "
-        "se recalculan con la línea actual — se mezclan lo menos posible."
+        "se recalculan con la línea actual y **NO son evidencia prospectiva**: "
+        "solo lo congelado lo es. Los pendientes van **🧾 Línea de hoy** (su "
+        "versión congelada, si existe, vive en el registro fiel de abajo)."
     )
 
     c1, c2 = st.columns(2)
@@ -1030,6 +1037,9 @@ with tab_registro:
         ev_num = (pd.to_numeric(picks["ev_estimado"], errors="coerce")
                   if "ev_estimado" in picks.columns
                   else pd.Series(float("nan"), index=picks.index))
+        p_push = (pd.to_numeric(picks["p_push"], errors="coerce")
+                  if "p_push" in picks.columns
+                  else pd.Series(float("nan"), index=picks.index))
         return pd.DataFrame({
             "temporada": picks["season"].astype(int),
             "semana": picks["week"].astype(int),
@@ -1048,6 +1058,7 @@ with tab_registro:
             "prob_mercado": prob_mercado,
             "cuota": pd.to_numeric(picks["cuota"], errors="coerce"),
             "ev_num": ev_num,
+            "p_push": p_push,
             "gano": picks["gano"].astype("boolean"),
             "ganancia": pd.to_numeric(picks["ganancia"], errors="coerce"),
             "jugado": jugado,
@@ -1136,7 +1147,10 @@ with tab_registro:
 
     registro["estado"] = datos.estado_picks(registro["gano"], registro["jugado"])
     registro["Estado"] = registro["estado"].map(EMOJI_ESTADO)
-    registro["origen"] = "🧮 Reconstruido"
+    # Origen honesto: lo jugado se recalcula con la línea de HOY (reconstruido,
+    # NO evidencia prospectiva); lo pendiente aún no está congelado.
+    registro["origen"] = np.where(registro["jugado"], "🧮 Reconstruido",
+                                  "🧾 Línea de hoy")
     registro = registro.sort_values(
         ["temporada", "semana", "partido"], ascending=[False, False, True]
     )
@@ -1228,17 +1242,41 @@ with tab_registro:
         "mercado mueve las líneas, aquí no se reescribe nada (y el resultado "
         "se decide con la línea congelada, no con la de hoy). Congelar es un "
         "acto explícito: así queda claro qué se emitió, cuándo y a qué precio. "
-        "Desde el 16/10/2026 lo que se congela es la **probabilidad calibrada** "
-        "(`srs-v2+cal-f4-1`, la corrección medida en la auditoría F4) y el "
-        "**EV con push explícito** (motor F5: si el resultado cae justo en la "
-        "línea, la apuesta se devuelve y no suma ni resta); los picks "
-        "anteriores conservan la probabilidad y el EV con los que se emitieron."
+        f"La captura nueva sella `{VERSION_REGISTRO}` (modelo + calibración + "
+        "motor de EV) y congela la **probabilidad calibrada**, la **probabilidad "
+        "de push** y el **EV con push explícito** (si el resultado cae justo en "
+        "la línea, la apuesta se devuelve y no suma ni resta); los picks "
+        "anteriores conservan la probabilidad, el EV y el sello con los que se "
+        "emitieron."
     )
 
     existente_fiel = datos.cargar_registro_picks()
+    problemas_existente = datos.validar_registro_picks(existente_fiel)
+    errores_existente = (problemas_existente[problemas_existente["severidad"] == "error"]
+                         if len(problemas_existente) else problemas_existente)
+    avisos_existente = (problemas_existente[problemas_existente["severidad"] == "aviso"]
+                        if len(problemas_existente) else problemas_existente)
+    if len(errores_existente):
+        st.error("🛑 El **registro fiel** tiene problemas de integridad y no se "
+                 "tocará nada: " + datos.resumen_problemas(errores_existente)
+                 + ". Revísalo antes de congelar picks nuevos.")
+    elif len(avisos_existente):
+        st.warning("El registro fiel tiene avisos: "
+                   + datos.resumen_problemas(avisos_existente) + ".")
+    elif len(existente_fiel):
+        st.caption(f"✓ Registro verificado: **{len(existente_fiel)}** filas, "
+                   "sin duplicados ni valores imposibles.")
+
     nuevas_fiel = datos.registro_desde_picks(
         registro[~registro["jugado"]].rename(columns={"pick": "seleccion"}),
-        version=f"{datos.VERSION_MODELO}+{calibracion.VERSION_CALIBRACION}")
+        version=VERSION_REGISTRO)
+    problemas_nuevas = datos.validar_registro_picks(nuevas_fiel)
+    errores_nuevas = (problemas_nuevas[problemas_nuevas["severidad"] == "error"]
+                      if len(problemas_nuevas) else problemas_nuevas)
+    # Alarma de coherencia (F2): la terna p_ganar/p_perder/p_push debe sumar 1.
+    problemas_coherencia = pd.concat(
+        [motor_ev.problemas_coherencia(fs), motor_ev.problemas_coherencia(ft),
+         motor_ev.problemas_coherencia(fm)], ignore_index=True)
     ids_ya = set(existente_fiel["id"]) if len(existente_fiel) else set()
     n_nuevos_fiel = int((~nuevas_fiel["id"].isin(ids_ya)).sum()) if len(nuevas_fiel) else 0
 
@@ -1248,19 +1286,42 @@ with tab_registro:
     elif not n_nuevos_fiel:
         st.caption("✓ Los picks pendientes de esta jornada ya están congelados. "
                    "No hay nada nuevo que registrar.")
+    elif len(errores_existente):
+        st.caption("La captura queda bloqueada hasta resolver los problemas "
+                   "del registro (arriba).")
+    elif len(errores_nuevas):
+        st.error("🛑 Hay picks nuevos con problemas y NO se congelará nada: "
+                 + datos.resumen_problemas(errores_nuevas) + ".")
+    elif len(problemas_coherencia):
+        detalle = "; ".join(
+            f"{p.indice}: {p.problema}"
+            for p in problemas_coherencia.head(5).itertuples(index=False))
+        if len(problemas_coherencia) > 5:
+            detalle += f"; … y {len(problemas_coherencia) - 5} más"
+        st.error("🛑 Revisión interna: la terna p_ganar/p_perder/p_push no "
+                 "cuadra y NO se congelará nada — " + detalle)
     else:
+        sin_cuota = int(pd.to_numeric(nuevas_fiel["cuota"], errors="coerce").isna().sum())
+        sin_prob = int(pd.to_numeric(nuevas_fiel["prob_modelo"], errors="coerce").isna().sum())
+        if sin_cuota or sin_prob:
+            st.info(f"{sin_cuota} pick(s) sin cuota y {sin_prob} sin probabilidad: "
+                    "se guardarán con la celda vacía (no se inventa nada).")
         if st.button(
             f"📌 Congelar {n_nuevos_fiel} picks de la jornada (línea y cuota de este momento)",
             help="Guarda una fotografía inmutable: selección, línea, cuota, "
-                 "probabilidad, edge y EV quedan fijados tal como están ahora. "
-                 "Volver a pulsar no cambia lo ya congelado.",
+                 "probabilidad, push, edge y EV quedan fijados tal como están "
+                 "ahora. Volver a pulsar no cambia lo ya congelado.",
         ):
-            existente_fiel, nuevos_fiel_n, repetidos_fiel = datos.capturar_registro_picks(
-                nuevas_fiel)
-            aviso = f"✅ Congelados {nuevos_fiel_n} picks nuevos."
-            if repetidos_fiel:
-                aviso += f" ({repetidos_fiel} ya estaban y no se han tocado.)"
-            st.success(aviso)
+            try:
+                existente_fiel, nuevos_fiel_n, repetidos_fiel = datos.capturar_registro_picks(
+                    nuevas_fiel)
+            except ValueError as error:
+                st.error(f"⚠️ No se congeló nada: {error}")
+            else:
+                aviso = f"✅ Congelados {nuevos_fiel_n} picks nuevos."
+                if repetidos_fiel:
+                    aviso += f" ({repetidos_fiel} ya estaban y no se han tocado.)"
+                st.success(aviso)
 
     if len(existente_fiel):
         fiel = datos.evaluar_registro_fiel(existente_fiel, calendario)
@@ -1280,6 +1341,14 @@ with tab_registro:
             f"· marcador **{peg_fiel}–{fal_fiel}** · push {push_fiel} · "
             f"pendientes {pen_fiel} · {roi_txt}."
         )
+        vers = existente_fiel["version_modelo"].dropna().astype(str)
+        vers = vers[vers.str.strip().ne("")]
+        if len(vers):
+            conteo = vers.value_counts()
+            st.caption(
+                "Versiones congeladas en el registro: "
+                + " · ".join(f"`{v}` ({int(n)})" for v, n in conteo.items())
+                + f". La captura nueva sella `{VERSION_REGISTRO}`.")
 
         def _tabla_fiel(fiel_df):
             """Tabla del registro fiel: lo congelado + el resultado derivado."""
@@ -1295,6 +1364,7 @@ with tab_registro:
                 "Cuota": pd.to_numeric(fiel_df["cuota"], errors="coerce"),
                 "Prob. modelo": pd.to_numeric(fiel_df["prob_modelo"], errors="coerce") * 100,
                 "Prob. sin vig": pd.to_numeric(fiel_df["prob_sin_vig"], errors="coerce") * 100,
+                "P. push": pd.to_numeric(fiel_df["p_push"], errors="coerce") * 100,
             })
             vista_f["Edge"] = [
                 f"{e:+.1f} pp" if m == "Moneyline" else f"{e:+.1f} pts"
@@ -1320,6 +1390,10 @@ with tab_registro:
                 "Cuota": st.column_config.NumberColumn(format="%+.0f"),
                 "Prob. modelo": st.column_config.NumberColumn(format="%.1f%%"),
                 "Prob. sin vig": st.column_config.NumberColumn(format="%.1f%%"),
+                "P. push": st.column_config.NumberColumn(
+                    format="%.2f%%",
+                    help="Probabilidad de push congelada al emitir (vacía en "
+                         "picks anteriores a F5: no se recalcula)."),
             },
         )
         st.caption(
